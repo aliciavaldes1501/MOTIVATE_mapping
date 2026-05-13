@@ -1,0 +1,209 @@
+---
+title: "MOTIVATE mapping - Creating maps to see Mahalanobis distance"
+author: "Alicia Valdés"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+This notebook creates one map for each PlotObservationID to see how well the Mahalanobis distance is working for mapping.
+
+# Load libraries
+
+```{r}
+library(sf)
+library(terra)
+library(tmap)
+library(stringr)
+library(readr)
+library(here)
+library(tidyverse)
+```
+
+# Load data
+
+```{r}
+# Load points from ReSurvey Europe observations from validated plots.
+# Some (most) of these observations are validated, but some are not.
+# The attribute 'valid_Landsat' indicates if the observation is validated
+# (TRUE), not validated (FALSE) or could not be validated (NA).
+points <- read_csv(here("..", "MOTIVATE_validation", "data", "clean", "data_obs_in_val_plots_20260416.csv")) %>%
+  st_as_sf(coords = c("Lon_updated", "Lat_updated"), crs = 4326)
+# Create a 500-m buffer around each point
+buffers <- points %>%
+  st_transform(crs = 32630) %>% # Transform to UTM zone 30N
+  st_buffer(dist = 500) %>% # Create a 500-m buffer
+  st_transform(crs = 4326) # Transform back to WGS84
+
+raster_files <- list.files(
+  here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_260508_max_1pixel_expBuffer"), 
+  pattern = "\\.tif$", full.names = TRUE, recursive = TRUE) 
+
+raster_files_3x3 <- list.files(
+  here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_260508_max_3x3pixels_expBuffer"), 
+  pattern = "\\.tif$", full.names = TRUE, recursive = TRUE) 
+```
+
+# Extract PlotObservationID from raster filenames
+
+```{r}
+get_id <- function(x) {
+  id <- str_extract(x, "(?<=Obs)\\d+")
+  as.numeric(id)
+}
+
+raster_ids <- data.frame(
+  file = raster_files,
+  PlotObservationID = sapply(raster_files, get_id)
+)
+raster_ids_3x3 <- data.frame(
+  file = raster_files_3x3,
+  PlotObservationID = sapply(raster_files_3x3, get_id)
+)
+sum(is.na(raster_ids$PlotObservationID))
+sum(is.na(raster_ids_3x3$PlotObservationID))
+```
+
+# Prepare tmap mode
+
+```{r}
+tmap_mode("plot")  # for exporting
+```
+
+# Loop over IDs and create maps
+
+```{r message=FALSE}
+output_dir <- "maps_combined_MAX/"
+dir.create(output_dir, showWarnings = FALSE)
+
+ids <- points %>% 
+  distinct(PlotObservationID) %>%
+  filter(PlotObservationID %in% raster_ids$PlotObservationID) %>%
+  pull(PlotObservationID)
+
+for (id in ids) {
+  
+  # subset vector layers
+  pt  <- points[points$PlotObservationID == id, ]
+  buf <- buffers[buffers$PlotObservationID == id, ]
+  
+  # ---- EXTRACT INFO EARLY ----
+  info <- pt[1, ]
+  
+  # ---- DEFINE OUTPUT FILE EARLY ----
+  outfile <- file.path(
+    output_dir,
+    paste0(
+      "plot", info$plotID_AV_num,
+      "_year", info$year,
+      "_obs", info$PlotObservationID,
+      ".png"
+    )
+  )
+  
+  # ✅ SKIP EARLY (BEFORE HEAVY WORK)
+  if (file.exists(outfile)) {
+    message("Skipping existing map: ", outfile)
+    next
+  }
+  
+  # ---- GET RASTERS (ONLY IF NEEDED) ----
+  rfile <- raster_ids$file[raster_ids$PlotObservationID == id][1]
+  if (is.na(rfile) || !file.exists(rfile)) {
+    message("Skipping (missing raster): ", id)
+    next
+  }
+  
+  rfile_3x3 <- raster_ids_3x3$file[raster_ids_3x3$PlotObservationID == id][1]
+  if (is.na(rfile_3x3) || !file.exists(rfile_3x3)) {
+    message("Skipping (missing raster 3x3): ", id)
+    next
+    }
+  
+  r <- rast(rfile)
+  r_3x3 <- rast(rfile_3x3)
+  
+  # ---- FORCE COMMON CRS ----
+  buf <- st_transform(buf, 3857)
+  pt  <- st_transform(pt, 3857)
+  r <- project(r, "EPSG:3857", method = "bilinear")
+  r_3x3  <- project(r_3x3, "EPSG:3857", method = "bilinear")
+  
+  # mask instead of crop
+  r <- mask(r, vect(buf))
+  r_3x3 <- mask(r_3x3, vect(buf))
+  
+  # ---- DEFINE FIXED EXTENT ----
+  bb <- st_bbox(buf)
+  
+  # ---- TITLE ----
+  title_noraster <- paste(
+    paste("Plot:", info$plotID_AV_num),
+    paste("Year:", info$year),
+    paste("Obs:", info$PlotObservationID),
+    paste("EUNIS:", info$EUNIS1),
+    paste("valid:", info$valid_Landsat),
+    sep = " | "
+  )
+  
+  title_raster <- "Mahalanobis with one pixel"
+  
+  title_raster_3x3 <- "Mahalanobis with 3x3 pixels"
+  
+  # ---- MAP 1: without raster ----
+  map_noraster <- tm_shape(buf, bbox = bb) +
+    tm_tiles("Esri.WorldImagery") +
+    tm_borders(col = "red", lwd = 2) +
+    tm_shape(pt) +
+    tm_symbols(col = "white", fill = "white", size = 0.5) +
+    tm_title(title_noraster, size = 0.9)
+  
+  # ---- MAP 2: with raster ----
+  map_raster <- tm_shape(buf, bbox = bb) +
+    tm_tiles("Esri.WorldImagery") +
+    tm_shape(r) +
+    tm_raster(
+      col.scale = tm_scale(values = "-viridis"),
+      col_alpha = 0.7
+    ) +
+    tm_shape(pt) +
+    tm_symbols(col = "white", fill = "white", size = 0.5) +
+    tm_title(title_raster, size = 0.9)
+  
+  # ---- MAP 2: with raster 3x3 ----
+  map_raster_3x3 <- tm_shape(buf, bbox = bb) +
+    tm_tiles("Esri.WorldImagery") +
+    tm_shape(r_3x3) +
+    tm_raster(
+      col.scale = tm_scale(values = "-viridis"),
+      col_alpha = 0.7
+    ) +
+    tm_shape(pt) +
+    tm_symbols(col = "white", fill = "white", size = 0.5) +
+    tm_title(title_raster_3x3, size = 0.9)
+  
+  # ---- COMBINE ----
+  final_map <- tmap_arrange(map_noraster, map_raster, map_raster_3x3, ncol = 3)
+  
+  # ---- EXPORT ----
+  tmap_save(final_map, outfile, width = 18, height = 6, units = "in", dpi = 300)
+}
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+

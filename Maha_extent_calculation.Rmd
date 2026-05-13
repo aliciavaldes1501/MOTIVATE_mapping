@@ -1,0 +1,538 @@
+---
+title: "MOTIVATE mapping - Calculating habitat extent from Mahalanobis rasters"
+author: "Alicia Valdés"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+This notebook calculates habitat extent from Mahalanobis rasters.
+
+# Load libraries
+
+```{r}
+library(terra)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(sf)
+library(readr)
+library(here)
+library(exactextractr)
+library(furrr)
+library(tmap)
+```
+
+# Load data
+
+Load points from ReSurvey Europe observations from validated plots. Some (most) of these observations are validated, but some are not. The attribute 'valid_Landsat' indicates if the observation is validated (TRUE), not validated (FALSE) or could not be validated (NA). Points are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPSG:3035) for better area calculations.
+
+
+```{r}
+points <- read_csv(here("..", "MOTIVATE_validation", "data", "clean", "data_obs_in_val_plots_20260416.csv")) %>%
+  st_as_sf(coords = c("Lon_updated", "Lat_updated"), crs = 4326) %>%
+  st_transform(3035)
+st_crs(points)$Name
+```
+
+Create a 500-m buffer around each point.
+
+```{r}
+buffers <- points %>% st_buffer(dist = 500, nQuadSegs = 100) # nQuadSegs to make smoother circles
+st_crs(buffers)$Name
+```
+
+Check that buffer areas are ok (should be around 785398 m² for a 500-m radius circle).
+
+```{r}
+buffers$buffer_area <- as.numeric(sf::st_area(buffers))
+```
+
+Load raster files with Mahalanobis distance. 
+
+```{r}
+raster_files <- list.files(
+  here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_260508_max_1pixel_expBuffer"),
+  pattern = "\\.tif$", full.names = TRUE, recursive = TRUE)
+```
+
+# Reproject rasters
+
+Rasters are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPSG:3035) for better area calculations.
+
+```{r message=FALSE}
+# ---- OUTPUT FOLDERS ----
+output_dir <- here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_reproj")
+
+# Create output folder if needed
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ---- LOOP OVER RASTERS ----
+for (f in raster_files) {
+  
+  # Build output filename FIRST
+  out_name <- file.path(
+    output_dir,
+    paste0(tools::file_path_sans_ext(basename(f)), "_LAEA.tif")
+  )
+  
+  # ✅ Skip if already exists
+  if (file.exists(out_name)) {
+    message("Skipping (already exists): ", basename(out_name))
+    next
+  }
+  
+  # Otherwise process
+  r <- rast(f)
+  
+  r_laea <- project(r, "EPSG:3035")
+  
+  writeRaster(r_laea, out_name, overwrite = FALSE)
+}
+```
+
+# Load reprojected rasters
+
+First remove old rasters in WGS84.
+
+```{r}
+rm(raster_files)
+```
+
+Now load new reprojected rasters in ETRS89.
+
+```{r}
+raster_files_proj <- list.files(
+  here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_reproj"), 
+  pattern = "\\.tif$", full.names = TRUE, recursive = TRUE)
+```
+
+```{r}
+crs(rast(raster_files_proj[[1]]), describe = TRUE)
+```
+
+# Get habitat exents from each raster
+
+## Extract PlotObservationID from raster filenames
+
+```{r}
+get_id <- function(x) {
+  str_extract(x, "(?<=Obs)\\d+") %>% as.numeric()
+}
+```
+
+## Define percentiles to use
+
+```{r}
+percentiles <- c(0.5, 0.7, 0.9)
+```
+
+## Function to process each raster
+
+```{r}
+process_raster_fractional <- function(f) {
+  
+  # -------------------------------------------------------------
+  # 1. IDENTIFY PLOT AND LOAD RASTER
+  # -------------------------------------------------------------
+  # Extract PlotObservationID from filename
+  id <- get_id(f)
+  
+  # Load raster (Mahalanobis distance surface for one plot)
+  r <- rast(f)
+  
+  
+  # -------------------------------------------------------------
+  # 2. SELECT CORRESPONDING BUFFER
+  # -------------------------------------------------------------
+  # Each raster corresponds to one PlotObservationID → subset matching buffer
+  buf <- buffers %>%
+    dplyr::filter(PlotObservationID == id)
+  
+  # If no matching buffer found, exit function
+  if (nrow(buf) == 0) return(NULL)
+  
+  # Ensure CRS compatibility between raster and buffer
+  buf <- st_transform(buf, crs(r))
+  st_crs(buf) <- st_crs(r)
+  
+  
+  # -------------------------------------------------------------
+  # 3. FRACTIONAL EXTRACTION (FOR STATISTICS)
+  # -------------------------------------------------------------
+  # Convert terra raster → raster object for exactextractr
+  r_raster <- raster::raster(r)
+  
+  # Extract pixel values within buffer using fractional coverage
+  # Returns:
+  #  - value: pixel Mahalanobis distance
+  #  - coverage_fraction: proportion of pixel inside buffer
+  df <- suppressWarnings(
+    exact_extract(r_raster, buf)[[1]]
+  ) %>%
+    dplyr::filter(!is.na(value))
+  
+  if (nrow(df) == 0) return(NULL)
+  
+  
+  # -------------------------------------------------------------
+  # 4. COMPUTE BASIC METRICS
+  # -------------------------------------------------------------
+  
+  # Area of a full raster pixel (m²)
+  pixel_area <- prod(res(r))
+  
+  # Fractional number of pixels in buffer
+  total_weight <- sum(df$coverage_fraction)
+  
+  # True buffer area (based on raster coverage, not vector geometry)
+  area_buffer <- total_weight * pixel_area
+  
+  
+  # -------------------------------------------------------------
+  # 5. COMPUTE THRESHOLDS
+  # -------------------------------------------------------------
+  # Thresholds are percentiles of Mahalanobis distance distribution
+  thr <- quantile(df$value, probs = percentiles, na.rm = TRUE)
+  
+  
+  # -------------------------------------------------------------
+  # 6. PREPARE RASTER (OPTIMIZED)
+  # -------------------------------------------------------------
+  # ✅ Crop and mask raster to buffer → reduces computation massively
+  r_crop <- crop(r, vect(buf))
+  buf_vect <- terra::vect(buf)[, 0]  # ✅ drop ALL attributesr
+  r_mask <- mask(r_crop, buf_vect)
+  
+  
+  # -------------------------------------------------------------
+  # 7. LOOP OVER THRESHOLDS (PERCENTILES)
+  # -------------------------------------------------------------
+  results <- purrr::map_dfr(seq_along(thr), function(i) {
+    
+    threshold <- thr[i]          # Mahalanobis threshold value
+    perc_val <- percentiles[i]  # percentile (e.g. 0.5, 0.7, 0.9)
+    
+    
+    # -----------------------------------------------------------
+    # 7.1 CLASSIFY RASTER INTO HABITAT / NON-HABITAT (FAST)
+    # -----------------------------------------------------------
+    # NOTE:
+    # value ≥ threshold = more similar → habitat
+    # value < threshold = less similar → non-habitat
+    # ✅ classification done in raster space (much faster)
+    r_class <- ifel(r_mask >= threshold, 1L, 0L)
+    
+    
+    # -----------------------------------------------------------
+    # 7.2 CONVERT CLASSIFIED RASTER TO POLYGONS
+    # -----------------------------------------------------------
+    # ✅ Only final classes are polygonized → very few polygons
+    pol_sf_thr <- as.polygons(r_class, dissolve = TRUE) %>%
+      st_as_sf() %>%
+      dplyr::rename(extent = 1) %>%   # rename raster value column
+      dplyr::select(extent, geometry) # ✅ KEEP ONLY THESE
+
+    
+    # -----------------------------------------------------------
+    # 7.3 CLIP POLYGONS TO BUFFER (IMPORTANT)
+    # -----------------------------------------------------------
+    # ✅ Removes pixel parts outside buffer
+    # ✅ Restores true circular boundary
+    pol_sf_thr <- suppressWarnings(
+      st_intersection(pol_sf_thr, buf)
+      )
+    
+    # ✅ VERY IMPORTANT: remove buffer attributes introduced by intersection
+    pol_sf_thr <- pol_sf_thr %>%
+      dplyr::select(extent, geometry)
+    
+    pol_sf_thr <- st_make_valid(pol_sf_thr)
+    
+    
+    # -----------------------------------------------------------
+    # 7.4 COMPUTE AREAS (FRACTIONAL, FROM EXACTEXTRACTR)
+    # -----------------------------------------------------------
+    # IMPORTANT:
+    # Use exactextractr-based areas for correct fractional accounting
+    
+    hab_weight <- sum(df$coverage_fraction[df$value >= threshold], na.rm = TRUE)
+    non_weight <- sum(df$coverage_fraction[df$value < threshold], na.rm = TRUE)
+    
+    area_hab <- hab_weight * pixel_area
+    area_non <- non_weight * pixel_area
+    
+    
+    # -----------------------------------------------------------
+    # 7.5 RETURN RESULTS
+    # -----------------------------------------------------------
+    tibble(
+      PlotObservationID = id,
+      percentile = perc_val,
+      threshold_dist = threshold,
+      n_pix_buffer = total_weight,
+      n_pix_extent = hab_weight,
+      n_pix_out = non_weight,
+      buffer_m2 = area_buffer,
+      extent_m2 = area_hab,
+      out_m2 = area_non,
+      extent_perc = area_hab / area_buffer * 100
+    ) %>%
+      dplyr::mutate(geometry = list(pol_sf_thr))
+  })
+  
+  
+  # -------------------------------------------------------------
+  # 8. RETURN OUTPUT
+  # -------------------------------------------------------------
+  return(results)
+}
+```
+
+
+```{r}
+# load existing results
+results_all <- readRDS(here("output", "extent_results_fractional.rds"))
+
+# IDs already processed
+done_ids <- unique(results_all$PlotObservationID)
+
+# IDs from rasters
+raster_ids <- sapply(raster_files_proj, get_id)
+
+# select rasters not yet processed
+rasters_to_run <- raster_files_proj[!raster_ids %in% done_ids]
+
+# Print what will run
+message("New rasters to process: ", length(rasters_to_run))
+
+# Show skipped rasters
+message("Already processed: ", length(done_ids))
+
+# run function only on new ones
+new_results <- purrr::map_dfr(
+  rasters_to_run,
+  process_raster_fractional
+)
+
+# combine
+results_all <- dplyr::bind_rows(results_all, new_results)
+
+# save updated results
+saveRDS(results_all, here("output", "extent_results_fractional.rds"))
+
+
+
+# Safety check
+if (length(rasters_to_run) == 0) {
+  message("Nothing to process!")
+}
+```
+
+## Get results table
+
+```{r}
+results_tbl <- results_all %>%
+  dplyr::select(-geometry)
+```
+
+```{r}
+results_tbl
+```
+
+# Export to shapefiles
+
+## Get geomtries
+
+```{r}
+# geometries (unnest)
+all_polygons <- results_all %>%
+  tidyr::unnest(geometry) %>%
+  sf::st_as_sf() %>%
+  dplyr::select(
+    PlotObservationID,
+    percentile,
+    threshold_dist,
+    n_pix_buffer,
+    n_pix_extent,
+    n_pix_out,
+    buffer_m2,
+    extent_m2,
+    out_m2,
+    extent_perc,
+    extent,
+    geometry
+    )
+```
+
+## Define directory to save shapefiles
+
+```{r}
+out_shapes <- here("output", "shapefiles")
+dir.create(out_shapes, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Export
+
+```{r}
+walk(unique(all_polygons$percentile), function(p) {
+  
+  shp <- all_polygons %>%
+    dplyr::filter(percentile == p)
+  
+  # Adapt names for shapefile
+  names(shp) <- make.names(names(shp), unique = TRUE)
+  names(shp) <- substr(names(shp), 1, 10)
+  
+  out_name <- file.path(
+    out_shapes,
+    paste0("extent_p", p * 100, ".shp")
+  )
+  
+  st_write(
+    shp,
+    out_name,
+    delete_layer = TRUE,
+    quiet = TRUE
+  )
+})
+```
+
+# Maps of extent with different percentiles
+
+Prepare tmap mode:
+
+```{r}
+tmap_mode("plot")  # for exporting
+```
+
+```{r message=FALSE}
+# output folder
+output_dir <- "maps_extent"
+dir.create(output_dir, showWarnings = FALSE)
+
+ids <- points %>% 
+  distinct(PlotObservationID) %>%
+  filter(PlotObservationID %in% results_all$PlotObservationID) %>%
+  pull(PlotObservationID)
+
+for (id in ids) {
+  
+  # define output file
+  info <- points %>%
+    st_drop_geometry() %>%
+    dplyr::filter(PlotObservationID == id) %>%
+    dplyr::slice(1)
+  
+  outfile <- file.path(
+    output_dir,
+    paste0(
+      "plot", info$plotID_AV_num,
+      "_year", info$year,
+      "_obs", info$PlotObservationID,
+      ".png"
+      )
+    )
+  
+  # skip if already exists
+  if (file.exists(outfile)) {
+    message("Skipping existing map: ", outfile)
+    next
+  }
+  
+  # subset vector layers
+  pt  <- points[points$PlotObservationID == id, ]
+  buf <- buffers[buffers$PlotObservationID == id, ]
+  
+  # subset results
+  res_id <- results_all %>%
+    dplyr::filter(PlotObservationID == id)
+  
+  # title
+  title_txt <- paste(
+    paste("Plot", info$plotID_AV_num),
+    paste("Year", info$year),
+    paste("Obs", info$PlotObservationID),
+    paste("EUNIS", info$EUNIS1),
+    paste("Valid", ifelse(info$valid_Landsat, "yes", "no")),
+    sep = " | "
+    )
+  
+  # ---------------------------------------------------------
+  # ✅ 1. BASE MAP (no polygons)
+  # ---------------------------------------------------------
+  map_base <- tm_shape(buf) +
+    tm_tiles("Esri.WorldImagery") +
+    tm_borders(col = "red", lwd = 2) +
+    tm_shape(pt) +
+    tm_symbols(col = "white", fill = "white", size = 0.5) +
+    tm_layout(frame = FALSE, legend.show = FALSE) +
+    tm_title(title_txt, size = 0.9)
+  
+  # ---------------------------------------------------------
+  # ✅ 2–4. HABITAT MAPS (only extent = 1)
+  # ---------------------------------------------------------
+  maps_extent <- lapply(sort(unique(res_id$percentile)), function(p) {
+    
+    pol_sf <- res_id %>%
+      dplyr::filter(percentile == p) %>%
+      dplyr::pull(geometry) %>%
+      .[[1]]
+    
+    # ✅ keep ONLY habitat
+    pol_sf_hab <- pol_sf %>%
+      dplyr::filter(extent == 1)
+    
+    tm_shape(buf) +
+      tm_tiles("Esri.WorldImagery") +
+      tm_borders(col = "red", lwd = 2) +
+      
+      # ✅ habitat only
+      tm_shape(pol_sf_hab) +
+      tm_fill(
+        col = "gold1",   
+        alpha = 0.6
+      ) +
+      
+      tm_shape(pt) +
+      tm_symbols(col = "white", fill = "white", size = 0.5) +
+      
+      tm_layout(
+        frame = FALSE,
+        legend.show = FALSE   # ✅ no legend
+      ) +
+      
+      tm_title(paste0("Percentile: ", p), size = 0.9)
+  })
+  
+    # ---------------------------------------------------------
+  # ✅ Combine into 2x2 grid
+  # ---------------------------------------------------------
+  final_map <- tmap_arrange(
+    map_base, maps_extent[[1]], maps_extent[[2]], maps_extent[[3]],
+    ncol = 2, nrow = 2)
+  
+  # save figure
+  
+  tmap_save(final_map, outfile, width = 8, height = 8, units = "in", dpi = 300)
+}
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+
