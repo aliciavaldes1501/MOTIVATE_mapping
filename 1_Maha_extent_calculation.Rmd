@@ -39,7 +39,6 @@ library(tmap)
 
 Load points from ReSurvey Europe observations from validated plots. Some (most) of these observations are validated, but some are not. The attribute 'valid_Landsat' indicates if the observation is validated (TRUE), not validated (FALSE) or could not be validated (NA). Points are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPSG:3035) for better area calculations.
 
-
 ```{r}
 points <- read_csv(here("..", "MOTIVATE_validation", "data", "clean", "data_obs_in_val_plots_20260416.csv")) %>%
   st_as_sf(coords = c("Lon_updated", "Lat_updated"), crs = 4326) %>%
@@ -64,7 +63,7 @@ Load raster files with Mahalanobis distance.
 
 ```{r}
 raster_files <- list.files(
-  here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_260508_max_1pixel_expBuffer"),
+  "C:/Data/MOTIVATE/MOTIVATE_RS_data/mapping/mahalanobis_260508_max_1pixel_expBuffer",
   pattern = "\\.tif$", full.names = TRUE, recursive = TRUE)
 ```
 
@@ -74,7 +73,7 @@ Rasters are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPS
 
 ```{r message=FALSE}
 # ---- OUTPUT FOLDERS ----
-output_dir <- here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_reproj")
+output_dir <- "C:/Data/MOTIVATE/MOTIVATE_RS_data/mapping/mahalanobis_reproj"
 
 # Create output folder if needed
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
@@ -115,7 +114,7 @@ Now load new reprojected rasters in ETRS89.
 
 ```{r}
 raster_files_proj <- list.files(
-  here("..", "..", "..", "Data", "MOTIVATE", "MOTIVATE_RS_data", "mapping", "mahalanobis_reproj"), 
+  "C:/Data/MOTIVATE/MOTIVATE_RS_data/mapping/mahalanobis_reproj", 
   pattern = "\\.tif$", full.names = TRUE, recursive = TRUE)
 ```
 
@@ -301,7 +300,6 @@ process_raster_fractional <- function(f) {
 }
 ```
 
-
 ```{r}
 # load existing results
 results_all <- readRDS(here("output", "extent_results_fractional.rds"))
@@ -317,27 +315,39 @@ rasters_to_run <- raster_files_proj[!raster_ids %in% done_ids]
 
 # Print what will run
 message("New rasters to process: ", length(rasters_to_run))
-
-# Show skipped rasters
 message("Already processed: ", length(done_ids))
-
-# run function only on new ones
-new_results <- purrr::map_dfr(
-  rasters_to_run,
-  process_raster_fractional
-)
-
-# combine
-results_all <- dplyr::bind_rows(results_all, new_results)
-
-# save updated results
-saveRDS(results_all, here("output", "extent_results_fractional.rds"))
-
-
 
 # Safety check
 if (length(rasters_to_run) == 0) {
   message("Nothing to process!")
+} else {
+  
+  n_total <- length(rasters_to_run)
+  
+  new_results <- purrr::map_dfr(
+    seq_along(rasters_to_run),
+    function(i) {
+      
+      f <- rasters_to_run[i]
+      id <- get_id(f)
+      
+      message(sprintf("Processing %d/%d - Obs: %s", i, n_total, id))
+      
+      tryCatch(
+        process_raster_fractional(f),
+        error = function(e) {
+          message("ERROR in ID ", id, ": ", e$message)
+          return(NULL)
+        }
+      )
+    }
+  )
+  
+  # combine
+  results_all <- dplyr::bind_rows(results_all, new_results)
+  
+  # save updated results
+  saveRDS(results_all, here("output", "extent_results_fractional.rds"))
 }
 ```
 

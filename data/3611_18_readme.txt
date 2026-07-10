@@ -1,0 +1,52 @@
+#######################################################
+### Linear trends in local biodiversity from ReSurveyEurope
+# dataset created by Stephan Kambach (stephan.kambach@gmail.com)
+# Project: MOTIVATE – Monitoring Of Terrestrial habitats by Integrating Vegetation Archive Time series in Europe
+# Webpage: https://motivate-biodiversity.eu/project/
+######################################################
+
+###################################################### 
+### please cite the following Sources ################
+Kambach et al. (2025) Habitat-specific trends in taxonomic, functional, and phylogenetic diversity in European plant communities during the last 100 years. DOI: 10.21203/rs.3.rs-7002324/v1.
+Knollová et al. (2024) ReSurveyEurope: A database of resurveyed vegetation plots in Europe. DOI:10.1111/jvs.13235.
+Chytrý et al. (2020) EUNIS Habitat Classification: Expert system, characteristic species combinations and distribution maps of European Habitats. DOI: 10.1111/avsc.12519).
+For raw data or contribute to the ReSurveyEurope Initiative, contact Ilona Knollová (ikuzel@sci.muni.cz), https://euroveg.org.
+Overview on plot locations available at https://evamap.eu.
+######################################################
+
+########################################################
+### Dimensions of local plant diversity ################
+"Cover" - joint summed cover of co-occurring taxa (in %)
+"Species\nrichness" - number of co-occurring taxa
+"Shannon\ndiversity" - richness and evenness of co-occurring taxa
+"Functional\nrichness" - volume of the functional space occupied by the species within a community 
+"Functional\nevenness" - abundance-weighted regularity of species distribution in multi-dimensional functional space
+"Functional\ndivergence" - abundance-weighted mean divergence of co-occurring taxa in multi-dimensional trait space
+"Faith\nphylogenetic diversity" - sum of all phylogenetic branch lengths
+"Mean pairwise\nphylogenetic distance" - Mean phylogenetic branch length between all pairs of co-occurring taxa, weighted by abundance
+"Mean nearest\ntaxon distance" - Mean nearest distance to the most closely related taxa, weighted by abundance
+"No.of\nRed List species" - number of threatened species according to harmonized national and European Red Lists
+"Cover of\nRed List species" - koint cover of threatened species according to harmonized national and European Red Lists
+"No. of\nnon-native species" - number of non-native species, according to FloraVeg.EU database
+"Cover of\nnon-native species" - number of non-native species, according to FloraVeg.EU database
+"No. of\nspecialists" - number of species that were classified as 10% lowest Simpson-dissimilarity values among the plots in which they occurred
+"Cover of\nspecialists" - joint cover of species that were classified as 10% lowest Simpson-dissimilarity values among the plots in which they occurred
+"No. of\ngeneralists" - number of species that were classified as 10% highest Simpson-dissimilarity values among the plots in which they occurred
+"Cover of\ngeneralists" - Joint cover of species that were classified as 10% highest Simpson-dissimilarity values among the plots in which they occurred
+"Community-weighted\nmean niche width" - abundance-weighted mean value species-Level average Simpson-dissimilarity values
+########################################################
+
+########################################################
+### Column explanations ################################
+
+"metric" - type of biodiversity metric#
+"time_seriesID" - combination of projectID, siteID, and plotID to identify individual time series
+"slope" - average increase in biodiversity metric over one year (estimated with linear ordinary least square models)
+"initial_div_value" - value of the diversity metric at the first Observation date
+"EUNIS_start" - EUNIS habitat classification at the first observation date
+"EUNIS_end" - EUNIS habitat classification at the last observation date
+"year_start" - year of the first obsevation
+"year_end" - year of the last observation
+"n" - number of observations
+"Trajectory" - expert-assigned change in habitat type (stable, succession, disturbance, other, unclassifiable
+"plot_size" - area of vegetation plot (in m²)
