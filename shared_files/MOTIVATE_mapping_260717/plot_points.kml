@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document id="root_doc">
+<Folder><name>plot_points</name>
+  <Placemark id="plot_points.1">
+	<name>Ecohydrology of Floodplain Meadows - 28 - 28-119</name>
+      <Point><coordinates>-2.206035,52.057355</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.2">
+	<name>Ecohydrology of Floodplain Meadows - 28 - 28-120</name>
+      <Point><coordinates>-2.20594,52.057193</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.3">
+	<name>Ecohydrology of Floodplain Meadows - 28 - 28-208</name>
+      <Point><coordinates>-2.202561,52.056983</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.4">
+	<name>NATURDATA.DK resurvey - 214159 - 214159</name>
+      <Point><coordinates>10.78839,55.268158</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.5">
+	<name>NATURDATA.DK resurvey - 90983 - 90983</name>
+      <Point><coordinates>9.380724,56.017674</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.6">
+	<name>NATURDATA.DK resurvey, abundance data - 52024 - 52024</name>
+      <Point><coordinates>8.350523,56.8998</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.7">
+	<name>NWR Meninger Holz - MenHolz - n2</name>
+      <Point><coordinates>9.935687,53.199572</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.8">
+	<name>NWR Meninger Holz - MenHolz - n3</name>
+      <Point><coordinates>9.935667,53.198674</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.9">
+	<name>Resurvey Dolomiti Bellunesi National Park - Site102 - 102</name>
+      <Point><coordinates>11.855917,46.08245</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.10">
+	<name>WS5 NWR Limker Strang - GridP - A8</name>
+      <Point><coordinates>9.672733,51.71995</coordinates></Point>
+  </Placemark>
+  <Placemark id="plot_points.11">
+	<name>gruenland_bayern - Bayern - 1108</name>
+      <Point><coordinates>11.12128853,48.08924575</coordinates></Point>
+  </Placemark>
+</Folder>
+</Document></kml>

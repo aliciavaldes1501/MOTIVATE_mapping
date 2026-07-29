@@ -1,0 +1,295 @@
+---
+title: "MOTIVATE mapping - Processing biodiversity data"
+author: "Alicia Valdés"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+This notebook processes biodiversity data from Nature Communications paper by Stephan Kambach (https://doi.org/10.1038/s41467-026-72112-5). The data includes time series-specific linear trends in all biodiversity indices, expressed in annual percentage changes and in absolute units, and is openly available at the data repository of the German Centre for Integrated Biodiversity Research (iDiv) Halle-Jena-Leipzig (idata.idiv.de/ddm/Data/ShowData/3611, https://doi.org/10.25829/idiv.3611-rgwa69).The notebook joins this data with habitat exent data.
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(here)
+library(lubridate)
+library(sf)
+```
+
+# Load data from Nat. Comms. paper
+
+From https://idata.idiv.de/ddm/Data/ShowData/3611
+
+A pan-Europe dataset of estimated linear trends in multiple dimension of local plant diversity in 57,390 vegetation-plot time series.
+
+```{r}
+biodiv_perc <- read_tsv(here("data", "all_lm_trends_percentage_change_scale.txt"))
+biodiv_perc
+```
+
+# Load original data
+
+```{r}
+data_V2025.2 <- read_tsv(
+  "C:/Data/MOTIVATE/MOTIVATE_data/Data/EVA and ReSurvey Data/2025 data - V2025.2/Core data/200_Motivate20250415_notJUICE_header_with_precise_coordinates.csv") %>%
+  mutate(date = dmy(`Date of recording`), year = as.integer(year(date)))
+```
+
+# Load data on extent changes
+
+```{r}
+extent_change_sf <- readRDS(here("data", "clean", "extent_change_sf.rds"))
+```
+
+# Add columns for EUNIS1 (start and end) to biodiversity data
+
+```{r}
+biodiv_perc <- biodiv_perc %>%
+  mutate(EUNIS1_start = str_sub(EUNIS_start, 1, 1),
+         EUNIS1_end = str_sub(EUNIS_end, 1, 1))
+```
+
+# Join extent and biodiversity data
+
+```{r}
+biodiv_extent <- extent_change_sf %>% st_drop_geometry() %>%
+  # inner_join only joins record present in both
+  # some are present in extent_change-sf but not in biodiv_perc (e.g. DK presence-absence data)
+  # some are present in biodiv_perc but not in extent_change_sf (e.g. those not belonging to Q, R, S, T)
+  inner_join(biodiv_perc, by = c("plotID" = "time_seriesID"),
+            relationship = "many-to-many")
+```
+
+# Check if years match
+
+```{r}
+# Number of plots
+biodiv_extent %>% distinct(plotID) %>% nrow()
+# Number of plots where first and last year match --> USE THIS SO FAR!?
+biodiv_extent %>% filter(first_year == year_start & last_year == year_end) %>% 
+  distinct(plotID) %>% nrow()
+# Number of plots where first year does not match, but last year matches
+biodiv_extent %>% filter(first_year != year_start & last_year == year_end) %>% 
+  distinct(plotID) %>% nrow()
+# Number of plots where first year matches, but last year does not
+biodiv_extent %>% filter(first_year == year_start & last_year != year_end) %>% 
+  distinct(plotID) %>% nrow()
+# Number of plots where neither first nor last year match
+biodiv_extent %>% filter(first_year != year_start & last_year != year_end) %>% 
+  distinct(plotID) %>% nrow()
+```
+
+In some cases, they do not match because the first or last observation in some time series did not have data on functional and/or phylogenetic diversity metrics (cf. Stephan's email). So far, we use only time series where first and last year match.
+
+```{r}
+biodiv_extent <- biodiv_extent %>%
+  filter(first_year == year_start & last_year == year_end)
+```
+
+```{r}
+nrow(biodiv_extent %>% distinct(plotID))
+```
+
+# Map of plots in bioregions
+
+Read shapefile with info on bioregions:
+
+```{r}
+biogeo <- st_read("C:/Data/PAs/Biogeoregions/PAs/N2K_BiogeoUNITS.shp")
+```
+
+```{r}
+biodiv_extent_sf <- extent_change_sf %>% 
+  filter(plotID %in% biodiv_extent$plotID)
+```
+
+```{r}
+# --------------------------------------------------
+# One location per plot
+# --------------------------------------------------
+
+plot_locations <- biodiv_extent_sf %>%
+  distinct(plotID, .keep_all = TRUE) %>%
+  mutate(
+    BIOUNIT = paste(BIOGEO, UNIT, sep = "_")
+  )
+
+# --------------------------------------------------
+# Add BIOUNIT to polygons
+# --------------------------------------------------
+
+biogeo_plot <- biogeo %>%
+  mutate(
+    BIOUNIT = paste(BIOGEO, UNIT, sep = "_")
+  )
+
+# --------------------------------------------------
+# Sampled units
+# --------------------------------------------------
+
+sampled_units <- unique(plot_locations$BIOUNIT)
+
+biogeo_plot <- biogeo_plot %>%
+  mutate(
+    sampled = BIOUNIT %in% sampled_units
+  )
+
+biogeo_sampled <- biogeo_plot %>%
+  filter(sampled)
+
+# --------------------------------------------------
+# Zoom extent
+# --------------------------------------------------
+
+bb <- st_bbox(biogeo_sampled)
+
+# --------------------------------------------------
+# Base colours by BIOGEO
+# --------------------------------------------------
+
+biogeo_cols <- c(
+  ALP = "#2166AC",  # blue
+  ATL = "#F4A300",  # orange
+  CON = "#1B9E77",  # green
+  MED = "#D73027",  # red
+  PAN = "#7B3294"   # purple
+)
+
+# --------------------------------------------------
+# Create shades within each BIOGEO
+# --------------------------------------------------
+
+biounit_df <- plot_locations %>%
+  st_drop_geometry() %>%
+  distinct(BIOGEO, UNIT, BIOUNIT) %>%
+  arrange(BIOGEO, UNIT)
+
+cols <- c()
+
+for (bg in unique(biounit_df$BIOGEO)) {
+
+  units_bg <- biounit_df %>%
+    filter(BIOGEO == bg)
+
+  n_units <- nrow(units_bg)
+
+  pal <- colorRampPalette(
+    c(
+      lighten(biogeo_cols[bg], amount = 0.35),
+      darken(biogeo_cols[bg], amount = 0.15)
+    )
+  )(n_units)
+
+  cols <- c(
+    cols,
+    setNames(pal, units_bg$BIOUNIT)
+  )
+}
+
+# --------------------------------------------------
+# Plot
+# --------------------------------------------------
+
+ggplot() +
+
+  # Background units
+  geom_sf(
+    data = biogeo_plot,
+    fill = "grey95",
+    color = "grey75",
+    linewidth = 0.2
+  ) +
+
+  # Sampled units
+  geom_sf(
+    data = biogeo_sampled,
+    aes(fill = BIOUNIT),
+    color = "grey40",
+    linewidth = 0.3
+  ) +
+
+  # Plot locations
+  geom_sf(
+    data = plot_locations,
+    color = "black",
+    size = 0.12,
+    alpha = 0.4
+  ) +
+
+  scale_fill_manual(
+    values = cols,
+    name = "Biogeographical unit"
+  ) +
+
+  coord_sf(
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+
+  labs(
+    title = "Distribution of plots across biogeographical units"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 8),
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    )
+  )
+```
+
+# Count of plots in bioregions
+
+```{r}
+biodiv_extent_sf %>% st_drop_geometry() %>% select(plotID, BIOGEO, UNIT) %>% 
+  distinct() %>% count(BIOGEO) %>% arrange(n)
+biodiv_extent_sf %>% st_drop_geometry() %>% select(plotID, BIOGEO, UNIT) %>% 
+  distinct() %>% count(BIOGEO, UNIT) %>% arrange(n)
+```
+
+# Add geometry
+
+```{r}
+biodiv_extent <- biodiv_extent %>%
+  left_join(biodiv_extent_sf %>% distinct(plotID, geometry),
+    by = c("plotID"),
+    relationship = "many-to-one"
+  ) %>%
+  st_as_sf()
+```
+
+## Save as .rds
+
+```{r}
+saveRDS(biodiv_extent, here("data", "clean", "biodiv_extent.rds"))
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+

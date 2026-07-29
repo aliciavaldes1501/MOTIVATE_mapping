@@ -1,0 +1,366 @@
+---
+title: "MOTIVATE mapping - Analysing biodiversity - habitat exent relationships"
+author: "Alicia Valdés"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+This notebook analyses relationships between biodiversity metrics and habitat extent metrics.
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(here)
+library(purrr)
+library(broom)
+library(MASS)
+library(ggplot2)
+```
+
+# Load data on biodiversity and habitat extent
+
+```{r}
+biodiv_extent <- readRDS(here("data", "clean", "biodiv_extent.rds"))
+```
+
+
+```{r}
+biodiv_extent <- biodiv_extent %>%
+  pivot_longer(cols = absolute_change:annual_change, names_to = "metric_extent",
+               values_to = "value") %>% 
+  rename(metric_biodiv = metric)
+```
+
+# Distributions of initial biodiversity values
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  group_by(metric_biodiv) %>%
+  mutate(
+    q01 = quantile(initial_div_value, 0.01, na.rm = TRUE),
+    q99 = quantile(initial_div_value, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(initial_div_value >= q01, initial_div_value <= q99) %>%
+  ggplot(aes(initial_div_value)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~metric_biodiv, scales = "free") +
+  theme_bw()
+# Density plots
+biodiv_extent %>%
+  group_by(metric_biodiv) %>%
+  mutate(
+    q01 = quantile(initial_div_value, 0.01, na.rm = TRUE),
+    q99 = quantile(initial_div_value, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(initial_div_value >= q01, initial_div_value <= q99) %>%
+  ggplot(aes(initial_div_value)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~metric_biodiv, scales = "free")
+# Boxplots
+ggplot(biodiv_extent,
+       aes(x = metric_biodiv, y = initial_div_value)) +
+  geom_boxplot(outlier.alpha = 0.1) +
+  coord_flip()
+```
+
+# Distributions of biodiversity change
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  group_by(metric_biodiv) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~metric_biodiv, scales = "free") +
+  theme_bw()
+# Density plots
+biodiv_extent %>%
+  group_by(metric_biodiv) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~metric_biodiv, scales = "free")
+# Boxplots
+ggplot(biodiv_extent,
+       aes(x = metric_biodiv, y = slope)) +
+  geom_boxplot(outlier.alpha = 0.1) +
+  coord_flip()
+```
+
+# Distributions of habitat extent change
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  group_by(metric_extent, percentile) %>%
+  mutate(
+    q01 = quantile(value, 0.01, na.rm = TRUE),
+    q99 = quantile(value, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(value >= q01, value <= q99) %>%
+  ggplot(aes(value)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~metric_extent + percentile, scales = "free") +
+  theme_bw()
+# Density plots
+biodiv_extent %>%
+  group_by(metric_extent, percentile) %>%
+  mutate(
+    q01 = quantile(value, 0.01, na.rm = TRUE),
+    q99 = quantile(value, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(value >= q01, value <= q99) %>%
+  ggplot(aes(value)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~metric_extent + percentile, scales = "free")
+```
+
+# Effect of initial extent on initial diversity
+
+```{r}
+models_init <- biodiv_extent %>%
+  distinct(plotID, percentile, EUNIS_plot, extent_first, metric_biodiv, 
+           initial_div_value, Trajectory) %>%
+  group_by(metric_biodiv, percentile) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(initial_div_value ~ extent_first, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "extent_first")),
+    fit = map(model, glance)
+  ) %>%
+  transmute(
+    metric_biodiv,
+    percentile,
+    estimate = map_dbl(coef, "estimate"),
+    p.value = map_dbl(coef, "p.value"),
+    r2 = map_dbl(fit, "r.squared"),
+    n = map_int(data, nrow)
+  ) %>%
+  arrange(desc(r2))
+
+models_init %>% filter(p.value < 0.1 & r2 > 0.01)
+```
+
+# Effect of change in extent
+
+```{r}
+models_change <- biodiv_extent %>%
+  group_by(metric_biodiv, metric_extent, percentile) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ value, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "value")),
+    fit = map(model, glance)
+  ) %>%
+  transmute(
+    metric_biodiv,
+    percentile,
+    estimate = map_dbl(coef, "estimate"),
+    p.value = map_dbl(coef, "p.value"),
+    r2 = map_dbl(fit, "r.squared"),
+    n = map_int(data, nrow)
+  ) %>%
+  arrange(desc(r2))
+
+models_change %>% filter(p.value < 0.1 & r2 > 0.01)
+```
+
+```{r}
+plot_data_change <- biodiv_extent %>%
+  semi_join(
+    models_change %>%
+      dplyr::filter(p.value < 0.1 & r2 > 0.01) %>%
+      dplyr::select(metric_biodiv, metric_extent, percentile),
+    by = c("metric_biodiv", "metric_extent", "percentile")
+  )
+```
+
+```{r}
+make_plot_change <- function(df){
+
+  biodiv_name <- unique(df$metric_biodiv)
+  extent_name <- unique(df$metric_extent)
+  perc <- unique(df$percentile)
+
+  ggplot(df, aes(x = value, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    labs(title = paste0(biodiv_name, " | percentile = ", perc), x = extent_name,
+         y= biodiv_name, colour = NULL) +
+    theme_bw()
+}
+```
+
+```{r}
+plot_data_change %>%
+  group_by(metric_biodiv, metric_extent, percentile) %>%
+  group_split() %>%
+  map(make_plot_change)
+```
+
+# Effect of change in extent for each habitat type
+
+```{r}
+models_change_hab <- biodiv_extent %>%
+  group_by(metric_biodiv,
+           metric_extent,
+           percentile,
+           EUNIS_plot) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ value, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "value")),
+    fit = map(model, glance)
+  ) %>%
+  transmute(
+    metric_biodiv,
+    metric_extent,
+    percentile,
+    EUNIS_plot,
+    estimate = map_dbl(coef, "estimate"),
+    p.value = map_dbl(coef, "p.value"),
+    r2 = map_dbl(fit, "r.squared"),
+    n = map_int(data, nrow)
+  ) %>%
+  arrange(desc(r2))
+models_change_hab %>% filter(p.value < 0.1 & r2 > 0.01)
+```
+
+```{r}
+plot_data_change_hab <- biodiv_extent %>%
+  semi_join(
+    models_change_hab %>%
+      dplyr::filter(p.value < 0.1 & r2 > 0.01) %>%
+      dplyr::select(metric_biodiv, metric_extent, percentile, EUNIS_plot),
+    by = c("metric_biodiv", "metric_extent", "percentile", "EUNIS_plot")
+  )
+```
+
+```{r}
+make_plot_change_hab <- function(df){
+
+  biodiv_name <- unique(df$metric_biodiv)
+  extent_name <- unique(df$metric_extent)
+  perc <- unique(df$percentile)
+  EUNIS <- unique(df$EUNIS_plot)
+
+  ggplot(df, aes(x = value, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    labs(title = paste0(biodiv_name, " | percentile = ", perc, " | EUNIS =", EUNIS), 
+         x = extent_name, y= biodiv_name, colour = NULL) +
+    theme_bw()
+}
+```
+
+```{r}
+plot_data_change_hab %>%
+  group_by(metric_biodiv, metric_extent, percentile, EUNIS_plot) %>%
+  group_split() %>%
+  map(make_plot_change_hab)
+```
+
+# Effect of change in extent x trajectory type
+
+```{r}
+models_change_traj <- biodiv_extent %>%
+  group_by(metric_biodiv,
+           metric_extent,
+           percentile,
+           Trajectory) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ value, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "value")),
+    fit = map(model, glance)
+  ) %>%
+  transmute(
+    metric_biodiv,
+    metric_extent,
+    percentile,
+    Trajectory,
+    estimate = map_dbl(coef, "estimate"),
+    p.value = map_dbl(coef, "p.value"),
+    r2 = map_dbl(fit, "r.squared"),
+    n = map_int(data, nrow)
+  ) %>%
+  arrange(desc(r2))
+models_change_traj %>% filter(p.value < 0.1 & r2 > 0.01)
+```
+
+```{r}
+plot_data_change_traj <- biodiv_extent %>%
+  semi_join(
+    models_change_traj %>%
+      dplyr::filter(p.value < 0.1 & r2 > 0.01) %>%
+      dplyr::select(metric_biodiv, metric_extent, percentile, Trajectory),
+    by = c("metric_biodiv", "metric_extent", "percentile", "Trajectory")
+  )
+```
+
+```{r}
+make_plot_change_traj <- function(df){
+
+  biodiv_name <- unique(df$metric_biodiv)
+  extent_name <- unique(df$metric_extent)
+  perc <- unique(df$percentile)
+  traj <- unique(df$Trajectory)
+
+  ggplot(df, aes(x = value, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    labs(title = paste0(biodiv_name, " | percentile = ", perc, " | Trajectory =", traj), 
+         x = extent_name, y= biodiv_name, colour = NULL) +
+    theme_bw()
+}
+```
+
+```{r}
+plot_data_change_traj %>%
+  group_by(metric_biodiv, metric_extent, percentile, Trajectory) %>%
+  group_split() %>%
+  map(make_plot_change_traj)
+```
+
+# IDEA
+
+Quantify extent change by using regression slopes between the observation year and the habitat extent measure (more similar to biodiversity changes in Nat. Comms. paper).
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+

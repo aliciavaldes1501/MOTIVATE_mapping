@@ -33,14 +33,22 @@ library(here)
 library(exactextractr)
 library(furrr)
 library(tmap)
+library(ggplot2)
+library(RColorBrewer)
+library(colorspace)
 ```
+
 
 # Load data
 
-Load points from ReSurvey Europe observations from validated plots. Some (most) of these observations are validated, but some are not. The attribute 'valid_Landsat' indicates if the observation is validated (TRUE), not validated (FALSE) or could not be validated (NA). Points are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPSG:3035) for better area calculations.
+Load points from ReSurvey Europe observations from validated plots. Points are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPSG:3035) for better area calculations.
 
 ```{r}
-points <- read_csv(here("..", "MOTIVATE_validation", "data", "clean", "data_obs_in_val_plots_20260416.csv")) %>%
+points <- read_csv(here("..", "MOTIVATE_validation", "data", "clean", "initial_dataset_validation.csv")) %>%
+  # Keep only plot observations from validated plots
+  filter(valid_plot == TRUE) %>%
+  # Remove unneeded columns
+  dplyr::select(- valid_obs, - valid_plot) %>%
   st_as_sf(coords = c("Lon_updated", "Lat_updated"), crs = 4326) %>%
   st_transform(3035)
 st_crs(points)$Name
@@ -64,6 +72,12 @@ Load raster files with Mahalanobis distance.
 ```{r}
 raster_files <- list.files(
   "C:/Data/MOTIVATE/MOTIVATE_RS_data/mapping/mahalanobis_260508_max_1pixel_expBuffer",
+  pattern = "\\.tif$", full.names = TRUE, recursive = TRUE)
+```
+
+```{r}
+raster_files_additional <- list.files(
+  "C:/Data/MOTIVATE/MOTIVATE_RS_data/mapping/mahalanobis_260713_max_1pixel_expBuffer_additional",
   pattern = "\\.tif$", full.names = TRUE, recursive = TRUE)
 ```
 
@@ -102,12 +116,44 @@ for (f in raster_files) {
 }
 ```
 
+```{r message=FALSE}
+# ---- OUTPUT FOLDERS ----
+output_dir <- "C:/Data/MOTIVATE/MOTIVATE_RS_data/mapping/mahalanobis_reproj"
+
+# Create output folder if needed
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ---- LOOP OVER RASTERS ----
+for (f in raster_files_additional) {
+  
+  # Build output filename FIRST
+  out_name <- file.path(
+    output_dir,
+    paste0(tools::file_path_sans_ext(basename(f)), "_LAEA.tif")
+  )
+  
+  # ✅ Skip if already exists
+  if (file.exists(out_name)) {
+    message("Skipping (already exists): ", basename(out_name))
+    next
+  }
+  
+  # Otherwise process
+  r <- rast(f)
+  
+  r_laea <- project(r, "EPSG:3035")
+  
+  writeRaster(r_laea, out_name, overwrite = FALSE)
+}
+```
+
 # Load reprojected rasters
 
 First remove old rasters in WGS84.
 
 ```{r}
 rm(raster_files)
+rm(raster_files_additional)
 ```
 
 Now load new reprojected rasters in ETRS89.
@@ -362,6 +408,36 @@ results_tbl <- results_all %>%
 results_tbl
 ```
 
+# Keep only observations from validated plots
+
+```{r}
+extent_val_plots <- points %>% 
+  left_join(results_tbl)
+```
+
+```{r}
+extent_val_plots <- extent_val_plots %>% arrange(plotID, percentile, year)
+```
+
+## Number of time series
+
+```{r}
+extent_val_plots %>% distinct(plotID) %>% nrow()
+```
+
+## Save csv
+
+```{r}
+extent_val_plots_csv <- extent_val_plots %>%
+  mutate(
+    x = st_coordinates(.)[,1],
+    y = st_coordinates(.)[,2]
+  ) %>%
+  st_drop_geometry()
+
+write_csv(extent_val_plots_csv, here("data", "clean", "extent_val_plots.csv"))
+```
+
 # Export to shapefiles
 
 ## Get geomtries
@@ -420,123 +496,836 @@ walk(unique(all_polygons$percentile), function(p) {
 })
 ```
 
-# Maps of extent with different percentiles
+# Change in habitat extent
 
-Prepare tmap mode:
+## Keep only first and last year for each plot
+
+```{r}
+extent_val_plots_first_last <- extent_val_plots %>%
+  filter(year == first_year | year == last_year) %>%
+  distinct()
+```
+
+## Remove time series with only one year
+
+```{r}
+extent_val_plots_first_last <- extent_val_plots_first_last %>% 
+  filter(n_resurveys > 1)
+```
+
+## Remove time series with missing extent data
+
+```{r}
+extent_val_plots_first_last <- extent_val_plots_first_last %>%
+  group_by(plotID) %>%
+  filter(!any(is.na(extent_perc))) %>%
+  ungroup()
+```
+
+## Assign EUNIS habitat type to each time series
+
+```{r}
+extent_val_plots_first_last <- extent_val_plots_first_last %>%
+  rename(EUNIS_obs = EUNIS1) %>%
+  group_by(plotID) %>%
+  mutate(
+    EUNIS_plot = if_else(
+      n_distinct(EUNIS_obs) > 1,
+      "Change",
+      first(EUNIS_obs)
+    )
+  ) %>%
+  ungroup()
+```
+
+## Number of time series
+
+```{r}
+extent_val_plots_first_last %>% distinct(plotID) %>% nrow()
+```
+
+## Calculate change in extent
+
+```{r}
+extent_change <- extent_val_plots_first_last %>%
+  group_by(plotID, percentile) %>%
+  summarise(
+    EUNIS_plot = first(EUNIS_plot),
+    first_year = first(first_year),
+    last_year = first(last_year),
+    extent_first = extent_perc[year == first_year][1],
+    extent_last  = extent_perc[year == last_year][1],
+    absolute_change = extent_last - extent_first,
+    relative_change = 100 * (extent_last - extent_first) / extent_first,
+    annual_change = (extent_last - extent_first) / (last_year - first_year),
+    .groups = "drop"
+    ) %>%
+  st_drop_geometry()
+```
+
+## Save csv
+
+```{r}
+write.csv(
+  st_drop_geometry(extent_change),
+  here("data", "clean", "extent_change.csv"),
+  row.names = FALSE
+)
+```
+
+# Assign a biogeographical region to each plot
+
+Extract the latest coordinate pair per plot (sometimes coordinates are different among different observations of the same plot):
+
+```{r}
+# One point per plotID, from the last observation year
+plot_coords <- extent_val_plots %>%
+  filter(year == last_year) %>%
+  distinct(plotID, .keep_all = TRUE) %>%
+  dplyr::select(plotID, geometry)
+
+# Join to extent_change
+extent_change_sf <- extent_change %>%
+  left_join(plot_coords, by = "plotID") %>%
+  st_as_sf()
+```
+
+Read shapefile with info on bioregions:
+
+```{r}
+biogeo <- st_read("C:/Data/PAs/Biogeoregions/PAs/N2K_BiogeoUNITS.shp")
+```
+
+```{r}
+# Ensure same CRS
+biogeo <- st_transform(
+  biogeo,
+  st_crs(extent_change_sf)
+)
+
+# Spatial join
+extent_change_sf <- extent_change_sf %>%
+  st_join(
+    biogeo %>%
+      dplyr::select(BIOGEO, UNIT),
+    join = st_intersects,
+    left = TRUE
+  )
+```
+
+## Map of plots in bioregions
+
+```{r}
+# --------------------------------------------------
+# One location per plot
+# --------------------------------------------------
+
+plot_locations <- extent_change_sf %>%
+  distinct(plotID, .keep_all = TRUE) %>%
+  mutate(
+    BIOUNIT = paste(BIOGEO, UNIT, sep = "_")
+  )
+
+# --------------------------------------------------
+# Add BIOUNIT to polygons
+# --------------------------------------------------
+
+biogeo_plot <- biogeo %>%
+  mutate(
+    BIOUNIT = paste(BIOGEO, UNIT, sep = "_")
+  )
+
+# --------------------------------------------------
+# Sampled units
+# --------------------------------------------------
+
+sampled_units <- unique(plot_locations$BIOUNIT)
+
+biogeo_plot <- biogeo_plot %>%
+  mutate(
+    sampled = BIOUNIT %in% sampled_units
+  )
+
+biogeo_sampled <- biogeo_plot %>%
+  filter(sampled)
+
+# --------------------------------------------------
+# Zoom extent
+# --------------------------------------------------
+
+bb <- st_bbox(biogeo_sampled)
+
+# --------------------------------------------------
+# Base colours by BIOGEO
+# --------------------------------------------------
+
+biogeo_cols <- c(
+  ALP = "#2166AC",  # blue
+  ATL = "#F4A300",  # orange
+  CON = "#1B9E77",  # green
+  MED = "#D73027",  # red
+  PAN = "#7B3294"   # purple
+)
+
+# --------------------------------------------------
+# Create shades within each BIOGEO
+# --------------------------------------------------
+
+biounit_df <- plot_locations %>%
+  st_drop_geometry() %>%
+  distinct(BIOGEO, UNIT, BIOUNIT) %>%
+  arrange(BIOGEO, UNIT)
+
+cols <- c()
+
+for (bg in unique(biounit_df$BIOGEO)) {
+
+  units_bg <- biounit_df %>%
+    filter(BIOGEO == bg)
+
+  n_units <- nrow(units_bg)
+
+  pal <- colorRampPalette(
+    c(
+      lighten(biogeo_cols[bg], amount = 0.35),
+      darken(biogeo_cols[bg], amount = 0.15)
+    )
+  )(n_units)
+
+  cols <- c(
+    cols,
+    setNames(pal, units_bg$BIOUNIT)
+  )
+}
+
+# --------------------------------------------------
+# Plot
+# --------------------------------------------------
+
+ggplot() +
+
+  # Background units
+  geom_sf(
+    data = biogeo_plot,
+    fill = "grey95",
+    color = "grey75",
+    linewidth = 0.2
+  ) +
+
+  # Sampled units
+  geom_sf(
+    data = biogeo_plot,
+    aes(fill = BIOUNIT),
+    color = "grey40",
+    linewidth = 0.3
+  ) +
+
+  # Plot locations
+  geom_sf(
+    data = plot_locations,
+    color = "black",
+    size = 0.12,
+    alpha = 0.4
+  ) +
+
+  scale_fill_manual(
+    values = cols,
+    name = "Biogeographical unit"
+  ) +
+
+  coord_sf(
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+
+  labs(
+    title = "Distribution of plots across biogeographical units"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 8),
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    )
+  )
+```
+
+## Count of plots in bioregions
+
+```{r}
+extent_change_sf %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) %>% 
+  distinct() %>% count(BIOGEO) %>% arrange(n)
+extent_change_sf %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) %>% 
+  distinct() %>% count(BIOGEO, UNIT) %>% arrange(n)
+```
+
+## Save as .rds
+
+```{r}
+saveRDS(extent_change_sf, here("data", "clean", "extent_change_sf.rds"))
+```
+
+# Plots
+
+## Change in extent
+
+```{r}
+ggplot(extent_change %>% 
+         pivot_longer(cols = c(absolute_change:annual_change), 
+                      names_to = "change_type"), 
+       aes(x = value)) + geom_histogram() +
+  facet_grid(rows = vars(change_type), cols = vars(percentile), scales = "free")
+```
+
+```{r}
+ggplot(extent_change %>% 
+         pivot_longer(cols = c(absolute_change:annual_change), 
+                      names_to = "change_type") %>%
+         # Filter extreme values, look at them later
+         filter(value < 25 & value > -25), 
+       aes(x = value)) + geom_histogram() +
+  facet_grid(rows = vars(change_type), cols = vars(percentile), scales = "free")
+```
+
+## Change in extent by habitat type
+
+```{r}
+extent_change %>%
+  pivot_longer(
+    absolute_change:annual_change,
+    names_to = "change_type"
+  ) %>%
+  ggplot(
+    aes(
+      EUNIS_plot,
+      value,
+      fill = EUNIS_plot
+    )
+  ) +
+  geom_violin() +
+  facet_grid(
+    change_type ~ percentile,
+    scales = "free_y"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none"
+  )
+```
+
+```{r}
+extent_change %>%
+  pivot_longer(
+    absolute_change:annual_change,
+    names_to = "change_type"
+  ) %>%
+  # Filter extreme values, look at them later
+  filter(value < 25 & value > -25) %>%
+  ggplot(
+    aes(
+      EUNIS_plot,
+      value,
+      fill = EUNIS_plot
+    )
+  ) +
+  geom_violin() +
+  facet_grid(
+    change_type ~ percentile,
+    scales = "free_y"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none"
+  )
+```
+
+## Change in extent by biogeographical region
+
+```{r}
+extent_change_sf %>%
+  pivot_longer(
+    absolute_change:annual_change,
+    names_to = "change_type"
+  ) %>%
+  ggplot(
+    aes(
+      BIOGEO,
+      value,
+      fill = BIOGEO
+    )
+  ) +
+  geom_violin() +
+  facet_grid(
+    change_type ~ percentile,
+    scales = "free_y"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none"
+  )
+```
+
+```{r}
+extent_change_sf %>%
+  pivot_longer(
+    absolute_change:annual_change,
+    names_to = "change_type"
+  ) %>%
+  # Filter extreme values, look at them later
+  filter(value < 25 & value > -25) %>%
+  ggplot(
+    aes(
+      BIOGEO,
+      value,
+      fill = BIOGEO
+    )
+  ) +
+  geom_violin() +
+  facet_grid(
+    change_type ~ percentile,
+    scales = "free_y"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none"
+  )
+```
+
+# Maps extreme values of change
+
+## Extract PlotObservationID from raster filenames
+
+```{r}
+get_id <- function(x) {
+  id <- str_extract(x, "(?<=Obs)\\d+")
+  as.numeric(id)
+}
+
+raster_ids <- data.frame(
+  file = raster_files_proj,
+  PlotObservationID = sapply(raster_files_proj, get_id)
+)
+sum(is.na(raster_ids$PlotObservationID))
+```
+
+## Select points
+
+```{r}
+plotIDs_extreme <- extent_change %>%
+         filter(absolute_change >= 25 | absolute_change <= -25) %>%
+  distinct(plotID) %>% pull(plotID)
+plots_extreme <- extent_val_plots_first_last %>% 
+  filter(plotID %in% plotIDs_extreme)
+```
+
+## Export to kml
+
+```{r}
+points_kml <- plots_extreme %>%
+  st_transform(4326) %>%
+  distinct(plotID, .keep_all = TRUE) %>%
+  mutate(
+    Name = plotID
+  )
+
+st_write(
+  points_kml["Name"],
+  here("kml", "plot_points.kml"),
+  delete_dsn = TRUE
+)
+```
+
+# Maps Mahalanobis
+
+```{r}
+tmap_mode("plot")  # for exporting
+```
+Select one "good" plot:
+
+```{r}
+points_map_maha <- points %>% 
+  filter(plotID == "South Bohemia floodplain forests - SBoh_forests - 212106")
+```
+
+```{r}
+output_dir <- "maps_maha"
+dir.create(output_dir, showWarnings = FALSE)
+
+plot_ids <- points_map_maha %>%
+  distinct(plotID) %>%
+  pull(plotID)
+
+for (plot_id in plot_ids) {
+
+  message("Processing: ", plot_id)
+
+  pts_plot <- points_map_maha %>%
+    filter(plotID == plot_id)
+
+  years <- sort(unique(pts_plot$year))
+
+  if (length(years) < 2) next
+
+  outfile <- file.path(
+    output_dir,
+    paste0(
+      gsub("[^[:alnum:]]+", "_", plot_id),
+      ".png"
+    )
+  )
+
+  if (file.exists(outfile)) {
+    message("Skipping existing map: ", outfile)
+    next
+  }
+
+  # ======================================================
+  # COMMON EXTENT
+  # ======================================================
+
+  buf_all <- buffers %>%
+    filter(PlotObservationID %in% pts_plot$PlotObservationID) %>%
+    st_transform(3857)
+
+  bb_common <- st_bbox(buf_all)
+
+  # ======================================================
+  # BASE MAP
+  # ======================================================
+
+  obs_base <- pts_plot %>%
+    filter(year == years[1]) %>%
+    slice(1) %>%
+    pull(PlotObservationID)
+
+  pt_base <- points_map_maha %>%
+    filter(PlotObservationID == obs_base) %>%
+    st_transform(3857)
+
+  buf_base <- buffers %>%
+    filter(PlotObservationID == obs_base) %>%
+    st_transform(3857)
+
+  title_base <- paste0(
+    plot_id,
+    " | ",
+    min(years),
+    "-",
+    max(years),
+    " | EUNIS: ",
+    unique(pts_plot$EUNIS1)[1]
+  )
+
+  map_base <-
+    tm_shape(buf_base, bbox = bb_common) +
+    tm_tiles("Esri.WorldImagery") +
+    tm_borders(col = "red", lwd = 2) +
+    tm_shape(pt_base) +
+    tm_symbols(
+      col = "white",
+      fill = "white",
+      size = 0.5
+    ) +
+    tm_layout(
+      frame = FALSE,
+      legend.show = FALSE
+    ) +
+    tm_title(title_base, size = 0.8)
+
+  # ======================================================
+  # MAHALANOBIS MAPS
+  # ======================================================
+
+  raster_maps <- list()
+
+  for (yr in years) {
+
+    obs_id <- pts_plot %>%
+      filter(year == yr) %>%
+      slice(1) %>%
+      pull(PlotObservationID)
+
+    pt <- points_map_maha %>%
+      filter(PlotObservationID == obs_id) %>%
+      st_transform(3857)
+
+    buf <- buffers %>%
+      filter(PlotObservationID == obs_id) %>%
+      st_transform(3857)
+
+    rfile <- raster_ids$file[
+      raster_ids$PlotObservationID == obs_id
+    ][1]
+
+    if (is.na(rfile) || !file.exists(rfile))
+      next
+
+    r <- rast(rfile)
+
+    r <- project(
+      r,
+      "EPSG:3857",
+      method = "bilinear"
+    )
+
+    r <- mask(r, vect(buf))
+
+    raster_maps[[as.character(yr)]] <-
+
+      tm_shape(buf, bbox = bb_common) +
+      tm_tiles("Esri.WorldImagery") +
+
+      tm_shape(r) +
+      tm_raster(
+        col.scale = tm_scale_continuous(values = "-viridis"),
+        col_alpha = 0.7,
+        col.legend = tm_legend("Similarity")
+        ) +
+      tm_shape(pt) +
+      tm_symbols(
+        col = "white",
+        fill = "white",
+        size = 0.5
+      ) +
+
+      tm_layout(
+        frame = FALSE,
+        legend.show = TRUE
+      ) +
+
+      tm_title(
+        paste0("Mahalanobis ", yr),
+        size = 0.9
+      )
+  }
+
+  # ======================================================
+  # ARRANGE
+  # ======================================================
+  
+  final_map <- tmap_arrange(
+    map_base,
+    raster_maps[[as.character(years[1])]],
+    raster_maps[[as.character(years[2])]],
+    ncol = 3,
+    nrow = 1
+    )
+  
+  # ======================================================
+  # SAVE
+  # ======================================================
+  
+  tmap_save(
+    final_map,
+    outfile,
+    width = 18,
+    height = 5,
+    units = "in",
+    dpi = 300
+    )
+  
+  message("Saved: ", outfile)
+  }
+```
+
+# Maps extent
 
 ```{r}
 tmap_mode("plot")  # for exporting
 ```
 
-```{r message=FALSE}
+Select one "good" plot:
+
+```{r}
+points_map_extent <- points %>% 
+  filter(plotID == "South Bohemia floodplain forests - SBoh_forests - 212106")
+```
+
+
+```{r}
 # output folder
 output_dir <- "maps_extent"
 dir.create(output_dir, showWarnings = FALSE)
 
-ids <- points %>% 
-  distinct(PlotObservationID) %>%
-  filter(PlotObservationID %in% results_all$PlotObservationID) %>%
-  pull(PlotObservationID)
+plot_ids <- points_map_extent %>%
+  distinct(plotID) %>%
+  pull(plotID)
 
-for (id in ids) {
+for (plot_id in plot_ids) {
+
+  message("Processing: ", plot_id)
+
+  pts_plot <- points_map_extent %>%
+    filter(plotID == plot_id)
+
+  years <- sort(unique(pts_plot$year))
+
+  # skip plots that do not have exactly two years
+  if (length(years) != 2) next
+
+  # ---------------------------------------------------------
+  # Basemap (use first observation)
+  # ---------------------------------------------------------
+  obs_base <- pts_plot %>%
+    slice(1) %>%
+    pull(PlotObservationID)
+
+  pt_base <- pts_plot %>%
+    filter(PlotObservationID == obs_base) %>%
+    slice(1)
+
+  buf_base <- buffers %>%
+    filter(PlotObservationID == obs_base)
   
-  # define output file
-  info <- points %>%
-    st_drop_geometry() %>%
-    dplyr::filter(PlotObservationID == id) %>%
-    dplyr::slice(1)
-  
+  eunis <- pt_base$EUNIS1
+
+  map_base <- tm_shape(buf_base) +
+    tm_tiles("Esri.WorldImagery") +
+    tm_borders(col = "red", lwd = 2) +
+    tm_shape(pt_base) +
+    tm_symbols(
+      col = "white",
+      fill = "white",
+      size = 0.5
+    ) +
+    tm_layout(
+      frame = FALSE,
+      legend.show = FALSE
+    ) +
+    tm_title(paste0(plot_id, "\nEUNIS: ", eunis, " | Years: ",
+                    min(years), "-", max(years)))
+
+  # ---------------------------------------------------------
+  # Create percentile maps
+  # ---------------------------------------------------------
+  extent_maps <- list()
+
+  for (yr in years) {
+
+    obs_id <- pts_plot %>%
+      filter(year == yr) %>%
+      slice(1) %>%
+      pull(PlotObservationID)
+
+    pt <- pts_plot %>%
+      filter(PlotObservationID == obs_id) %>%
+      slice(1)
+
+    buf <- buffers %>%
+      filter(PlotObservationID == obs_id)
+
+    for (p in c(0.5, 0.7, 0.9)) {
+
+      res_id <- results_all %>%
+        filter(
+          PlotObservationID == obs_id,
+          percentile == p
+        )
+
+      if (nrow(res_id) == 0) next
+
+      extent_perc <- round(res_id$extent_perc[1], 1)
+
+      pol_sf_hab <- res_id$geometry[[1]] %>%
+        filter(extent == 1)
+
+      extent_maps[[paste0(yr, "_", p)]] <-
+
+        tm_shape(buf) +
+        tm_tiles("Esri.WorldImagery") +
+        tm_borders(col = "red", lwd = 2) +
+
+        tm_shape(pol_sf_hab) +
+        tm_fill(
+          col = "gold1",
+          alpha = 0.6
+        ) +
+
+        tm_shape(pt) +
+        tm_symbols(
+          col = "white",
+          fill = "white",
+          size = 0.5
+        ) +
+
+        tm_layout(
+          frame = FALSE,
+          legend.show = FALSE
+        ) +
+
+        tm_title(
+          paste0(
+            yr,
+            " | P", p * 100,
+            "\n",
+            round(extent_perc, 1), "%"
+          ),
+          size = 0.8
+        )
+    }
+  }
+
+  # ---------------------------------------------------------
+  # Empty panel under basemap
+  # ---------------------------------------------------------
+  blank_map <- tm_shape(
+    st_as_sf(
+      data.frame(x = 0, y = 0),
+      coords = c("x", "y"),
+      crs = 4326
+    )
+  ) +
+    tm_symbols(size = 0) +
+    tm_layout(
+      frame = FALSE,
+      legend.show = FALSE
+    )
+
+  # ---------------------------------------------------------
+  # Arrange panels
+  # ---------------------------------------------------------
+  final_map <- tmap_arrange(
+    map_base,
+    extent_maps[[paste0(years[1], "_0.5")]],
+    extent_maps[[paste0(years[1], "_0.7")]],
+    extent_maps[[paste0(years[1], "_0.9")]],
+
+    blank_map,
+    extent_maps[[paste0(years[2], "_0.5")]],
+    extent_maps[[paste0(years[2], "_0.7")]],
+    extent_maps[[paste0(years[2], "_0.9")]],
+
+    ncol = 4,
+    nrow = 2
+  )
+
   outfile <- file.path(
     output_dir,
     paste0(
-      "plot", info$plotID_AV_num,
-      "_year", info$year,
-      "_obs", info$PlotObservationID,
+      gsub("[^[:alnum:]]+", "_", plot_id),
       ".png"
-      )
     )
-  
-  # skip if already exists
-  if (file.exists(outfile)) {
-    message("Skipping existing map: ", outfile)
-    next
-  }
-  
-  # subset vector layers
-  pt  <- points[points$PlotObservationID == id, ]
-  buf <- buffers[buffers$PlotObservationID == id, ]
-  
-  # subset results
-  res_id <- results_all %>%
-    dplyr::filter(PlotObservationID == id)
-  
-  # title
-  title_txt <- paste(
-    paste("Plot", info$plotID_AV_num),
-    paste("Year", info$year),
-    paste("Obs", info$PlotObservationID),
-    paste("EUNIS", info$EUNIS1),
-    paste("Valid", ifelse(info$valid_Landsat, "yes", "no")),
-    sep = " | "
-    )
-  
-  # ---------------------------------------------------------
-  # ✅ 1. BASE MAP (no polygons)
-  # ---------------------------------------------------------
-  map_base <- tm_shape(buf) +
-    tm_tiles("Esri.WorldImagery") +
-    tm_borders(col = "red", lwd = 2) +
-    tm_shape(pt) +
-    tm_symbols(col = "white", fill = "white", size = 0.5) +
-    tm_layout(frame = FALSE, legend.show = FALSE) +
-    tm_title(title_txt, size = 0.9)
-  
-  # ---------------------------------------------------------
-  # ✅ 2–4. HABITAT MAPS (only extent = 1)
-  # ---------------------------------------------------------
-  maps_extent <- lapply(sort(unique(res_id$percentile)), function(p) {
-    
-    pol_sf <- res_id %>%
-      dplyr::filter(percentile == p) %>%
-      dplyr::pull(geometry) %>%
-      .[[1]]
-    
-    # ✅ keep ONLY habitat
-    pol_sf_hab <- pol_sf %>%
-      dplyr::filter(extent == 1)
-    
-    tm_shape(buf) +
-      tm_tiles("Esri.WorldImagery") +
-      tm_borders(col = "red", lwd = 2) +
-      
-      # ✅ habitat only
-      tm_shape(pol_sf_hab) +
-      tm_fill(
-        col = "gold1",   
-        alpha = 0.6
-      ) +
-      
-      tm_shape(pt) +
-      tm_symbols(col = "white", fill = "white", size = 0.5) +
-      
-      tm_layout(
-        frame = FALSE,
-        legend.show = FALSE   # ✅ no legend
-      ) +
-      
-      tm_title(paste0("Percentile: ", p), size = 0.9)
-  })
-  
-    # ---------------------------------------------------------
-  # ✅ Combine into 2x2 grid
-  # ---------------------------------------------------------
-  final_map <- tmap_arrange(
-    map_base, maps_extent[[1]], maps_extent[[2]], maps_extent[[3]],
-    ncol = 2, nrow = 2)
-  
-  # save figure
-  
-  tmap_save(final_map, outfile, width = 8, height = 8, units = "in", dpi = 300)
+  )
+
+  tmap_save(
+    final_map,
+    outfile,
+    width = 14,
+    height = 7,
+    units = "in",
+    dpi = 300
+  )
+
+  message("Saved: ", outfile)
 }
 ```
 
