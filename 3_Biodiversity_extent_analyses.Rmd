@@ -58,9 +58,9 @@ biodiv_extent %>%
   ) %>%
   filter(initial_div_value >= q01, initial_div_value <= q99) %>%
   ggplot(aes(initial_div_value)) +
-  geom_histogram(bins = 30) +
-  facet_wrap(~metric_biodiv, scales = "free") +
-  theme_bw()
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric_biodiv, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Initial diversity value")
 # Density plots
 biodiv_extent %>%
   group_by(metric_biodiv) %>%
@@ -91,9 +91,9 @@ biodiv_extent %>%
   ) %>%
   filter(slope >= q01, slope <= q99) %>%
   ggplot(aes(slope)) +
-  geom_histogram(bins = 30) +
-  facet_wrap(~metric_biodiv, scales = "free") +
-  theme_bw()
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric_biodiv, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regressin slope (annual percentage change)")
 # Density plots
 biodiv_extent %>%
   group_by(metric_biodiv) %>%
@@ -124,9 +124,9 @@ biodiv_extent %>%
   ) %>%
   filter(value >= q01, value <= q99) %>%
   ggplot(aes(value)) +
-  geom_histogram(bins = 30) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
   facet_wrap(~metric_extent + percentile, scales = "free") +
-  theme_bw()
+  theme_bw() + xlab("Change in extent")
 # Density plots
 biodiv_extent %>%
   group_by(metric_extent, percentile) %>%
@@ -138,6 +138,31 @@ biodiv_extent %>%
   ggplot(aes(value)) +
   geom_density(fill = "steelblue", alpha = 0.5) +
   facet_wrap(~metric_extent + percentile, scales = "free")
+```
+
+# Distributions of habitat exent change by trajectory
+
+```{r}
+biodiv_extent %>%
+  distinct(plotID, Trajectory, percentile, metric_extent, value) %>%
+  # Filter extreme values, look at them later
+  filter(value < 25 & value > -25) %>%
+  ggplot(
+    aes(
+      Trajectory,
+      value,
+      fill = Trajectory
+    )
+  ) +
+  geom_violin() +
+  facet_grid(
+    metric_extent ~ percentile,
+    scales = "free_y"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none"
+  )
 ```
 
 # Effect of initial extent on initial diversity
@@ -290,7 +315,7 @@ plot_data_change_hab %>%
   map(make_plot_change_hab)
 ```
 
-# Effect of change in extent x trajectory type
+# Effect of change in extent for each trajectory type
 
 ```{r}
 models_change_traj <- biodiv_extent %>%

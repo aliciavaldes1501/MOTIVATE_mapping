@@ -38,7 +38,6 @@ library(RColorBrewer)
 library(colorspace)
 ```
 
-
 # Load data
 
 Load points from ReSurvey Europe observations from validated plots. Points are in WGS84 (EPSG:4326) - convert to ETRS89-extended / LAEA Europe (EPSG:3035) for better area calculations.
@@ -546,7 +545,7 @@ extent_val_plots_first_last %>% distinct(plotID) %>% nrow()
 
 ## Calculate change in extent
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 extent_change <- extent_val_plots_first_last %>%
   group_by(plotID, percentile) %>%
   summarise(
@@ -565,7 +564,7 @@ extent_change <- extent_val_plots_first_last %>%
 
 ## Save csv
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 write.csv(
   st_drop_geometry(extent_change),
   here("data", "clean", "extent_change.csv"),
@@ -577,7 +576,7 @@ write.csv(
 
 Extract the latest coordinate pair per plot (sometimes coordinates are different among different observations of the same plot):
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 # One point per plotID, from the last observation year
 plot_coords <- extent_val_plots %>%
   filter(year == last_year) %>%
@@ -770,8 +769,14 @@ extent_change_sf %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) 
 
 ## Save as .rds
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 saveRDS(extent_change_sf, here("data", "clean", "extent_change_sf.rds"))
+```
+
+## Load .rds
+
+```{r}
+extent_change <- readRDS(here("data", "clean", "extent_change_sf.rds"))
 ```
 
 # Plots
