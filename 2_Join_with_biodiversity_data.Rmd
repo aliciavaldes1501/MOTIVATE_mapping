@@ -17,7 +17,7 @@ editor_options:
   chunk_output_type: inline
 ---
 
-This notebook processes biodiversity data from Nature Communications paper by Stephan Kambach (https://doi.org/10.1038/s41467-026-72112-5). The data includes time series-specific linear trends in all biodiversity indices, expressed in annual percentage changes and in absolute units, and is openly available at the data repository of the German Centre for Integrated Biodiversity Research (iDiv) Halle-Jena-Leipzig (idata.idiv.de/ddm/Data/ShowData/3611, https://doi.org/10.25829/idiv.3611-rgwa69).The notebook joins this data with habitat exent data.
+This notebook processes biodiversity data from Nature Communications paper by Stephan Kambach (https://doi.org/10.1038/s41467-026-72112-5). The data includes time series-specific linear trends in all biodiversity indices, expressed in annual percentage changes and in absolute units, and is openly available at the data repository of the German Centre for Integrated Biodiversity Research (iDiv) Halle-Jena-Leipzig (idata.idiv.de/ddm/Data/ShowData/3611, https://doi.org/10.25829/idiv.3611-rgwa69). The notebook joins this data with habitat extent data.
 
 # Load libraries
 
@@ -55,6 +55,31 @@ data_V2025.2 <- read_tsv(
 extent_change_sf <- readRDS(here("data", "clean", "extent_change_sf.rds"))
 ```
 
+# Read bioregions shapefile
+
+```{r}
+biogeo <- st_read("C:/Data/PAs/Biogeoregions/PAs/N2K_BiogeoUNITS.shp")
+```
+
+# Spatial join extent changes - bioregions
+
+```{r}
+# Ensure same CRS
+biogeo <- st_transform(
+  biogeo,
+  st_crs(extent_change_sf)
+)
+
+# Spatial join
+extent_change_sf <- extent_change_sf %>%
+  st_join(
+    biogeo %>%
+      dplyr::select(BIOGEO, UNIT),
+    join = st_intersects,
+    left = TRUE
+  )
+```
+
 # Add columns for EUNIS1 (start and end) to biodiversity data
 
 ```{r}
@@ -67,8 +92,8 @@ biodiv_perc <- biodiv_perc %>%
 
 ```{r}
 biodiv_extent <- extent_change_sf %>% st_drop_geometry() %>%
-  # inner_join only joins record present in both
-  # some are present in extent_change-sf but not in biodiv_perc (e.g. DK presence-absence data)
+  # inner_join only joins records present in both
+  # some are present in extent_change_sf but not in biodiv_perc (e.g. DK presence-absence data)
   # some are present in biodiv_perc but not in extent_change_sf (e.g. those not belonging to Q, R, S, T)
   inner_join(biodiv_perc, by = c("plotID" = "time_seriesID"),
             relationship = "many-to-many")
@@ -79,7 +104,7 @@ biodiv_extent <- extent_change_sf %>% st_drop_geometry() %>%
 ```{r}
 # Number of plots
 biodiv_extent %>% distinct(plotID) %>% nrow()
-# Number of plots where first and last year match --> USE THIS SO FAR!?
+# Number of plots where first and last year match --> USE THIS SO FAR!
 biodiv_extent %>% filter(first_year == year_start & last_year == year_end) %>% 
   distinct(plotID) %>% nrow()
 # Number of plots where first year does not match, but last year matches

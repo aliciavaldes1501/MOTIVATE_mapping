@@ -1,0 +1,52 @@
+---
+title: "MOTIVATE mapping - Data on extent and functional trends from RF"
+author: "Alicia Valdés"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+This notebook analyses data on habitat extent metrics and functional trends derived from Random Forest models.
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(here)
+library(purrr)
+library(broom)
+library(MASS)
+library(ggplot2)
+library(corrplot)
+```
+
+# Load data
+
+```{r}
+# Data of plots with constant habitat
+RF_data_nochange <- read_csv(here("data", "RF", "MOTIVATE_ALL_V1_SPECTRAL"))
+# Data of plots with habitat change
+RF_data_change <- readRDS(here("data", "RF", "MOTIVATE_CHANGE_ALL_V1_SPECTRAL"))
+```
+
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+

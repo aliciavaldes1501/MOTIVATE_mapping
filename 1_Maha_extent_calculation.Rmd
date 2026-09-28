@@ -36,6 +36,8 @@ library(tmap)
 library(ggplot2)
 library(RColorBrewer)
 library(colorspace)
+library(ggh4x)
+library(gghalves)
 ```
 
 # Load data
@@ -64,6 +66,10 @@ Check that buffer areas are ok (should be around 785398 m² for a 500-m radius c
 
 ```{r}
 buffers$buffer_area <- as.numeric(sf::st_area(buffers))
+```
+
+```{r}
+range(buffers$buffer_area)
 ```
 
 Load raster files with Mahalanobis distance. 
@@ -400,7 +406,9 @@ if (length(rasters_to_run) == 0) {
 
 ```{r}
 results_tbl <- results_all %>%
-  dplyr::select(-geometry)
+  dplyr::select(-geometry) %>%
+  # Calculate extent also in ha
+  mutate(extent_ha = extent_m2 / 10000)
 ```
 
 ```{r}
@@ -441,7 +449,7 @@ write_csv(extent_val_plots_csv, here("data", "clean", "extent_val_plots.csv"))
 
 ## Get geomtries
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 # geometries (unnest)
 all_polygons <- results_all %>%
   tidyr::unnest(geometry) %>%
@@ -464,14 +472,14 @@ all_polygons <- results_all %>%
 
 ## Define directory to save shapefiles
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 out_shapes <- here("output", "shapefiles")
 dir.create(out_shapes, recursive = TRUE, showWarnings = FALSE)
 ```
 
 ## Export
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 walk(unique(all_polygons$percentile), function(p) {
   
   shp <- all_polygons %>%
@@ -552,11 +560,16 @@ extent_change <- extent_val_plots_first_last %>%
     EUNIS_plot = first(EUNIS_plot),
     first_year = first(first_year),
     last_year = first(last_year),
-    extent_first = extent_perc[year == first_year][1],
-    extent_last  = extent_perc[year == last_year][1],
-    absolute_change = extent_last - extent_first,
-    relative_change = 100 * (extent_last - extent_first) / extent_first,
-    annual_change = (extent_last - extent_first) / (last_year - first_year),
+    years_between = last_year - first_year,
+    extent_first_perc = extent_perc[year == first_year][1],
+    extent_last_perc  = extent_perc[year == last_year][1],
+    extent_first_ha = extent_ha[year == first_year][1],
+    extent_last_ha  = extent_ha[year == last_year][1],
+    absolute_change_perc = extent_last_perc - extent_first_perc,
+    annual_change_perc = (extent_last_perc - extent_first_perc) / years_between,
+    absolute_change_ha = extent_last_ha - extent_first_ha,
+    annual_change_ha = (extent_last_ha - extent_first_ha) / years_between,
+    relative_change = 100 * (extent_last_ha - extent_first_ha) / extent_first_ha,
     .groups = "drop"
     ) %>%
   st_drop_geometry()
@@ -574,7 +587,9 @@ write.csv(
 
 # Assign a biogeographical region to each plot
 
-Extract the latest coordinate pair per plot (sometimes coordinates are different among different observations of the same plot):
+## Extract the latest coordinate pair per plot
+
+Sometimes coordinates are different among different observations of the same plot:
 
 ```{r eval=FALSE, include=FALSE}
 # One point per plotID, from the last observation year
@@ -589,21 +604,35 @@ extent_change_sf <- extent_change %>%
   st_as_sf()
 ```
 
-Read shapefile with info on bioregions:
+## Save as .rds
+
+```{r eval=FALSE, include=FALSE}
+saveRDS(extent_change_sf, here("data", "clean", "extent_change_sf.rds"))
+```
+
+## Load .rds
+
+```{r}
+extent_change <- readRDS(here("data", "clean", "extent_change_sf.rds"))
+```
+
+## Read bioregions shapefile
 
 ```{r}
 biogeo <- st_read("C:/Data/PAs/Biogeoregions/PAs/N2K_BiogeoUNITS.shp")
 ```
 
+## Spatial join
+
 ```{r}
 # Ensure same CRS
 biogeo <- st_transform(
   biogeo,
-  st_crs(extent_change_sf)
+  st_crs(extent_change)
 )
 
 # Spatial join
-extent_change_sf <- extent_change_sf %>%
+extent_change <- extent_change %>%
   st_join(
     biogeo %>%
       dplyr::select(BIOGEO, UNIT),
@@ -619,7 +648,7 @@ extent_change_sf <- extent_change_sf %>%
 # One location per plot
 # --------------------------------------------------
 
-plot_locations <- extent_change_sf %>%
+plot_locations <- extent_change %>%
   distinct(plotID, .keep_all = TRUE) %>%
   mutate(
     BIOUNIT = paste(BIOGEO, UNIT, sep = "_")
@@ -761,192 +790,180 @@ ggplot() +
 ## Count of plots in bioregions
 
 ```{r}
-extent_change_sf %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) %>% 
+extent_change %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) %>% 
   distinct() %>% count(BIOGEO) %>% arrange(n)
-extent_change_sf %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) %>% 
+extent_change %>% st_drop_geometry() %>% dplyr::select(plotID, BIOGEO, UNIT) %>% 
   distinct() %>% count(BIOGEO, UNIT) %>% arrange(n)
 ```
 
-## Save as .rds
-
-```{r eval=FALSE, include=FALSE}
-saveRDS(extent_change_sf, here("data", "clean", "extent_change_sf.rds"))
-```
-
-## Load .rds
-
-```{r}
-extent_change <- readRDS(here("data", "clean", "extent_change_sf.rds"))
-```
 
 # Plots
 
 ## Change in extent
 
 ```{r}
-ggplot(extent_change %>% 
-         pivot_longer(cols = c(absolute_change:annual_change), 
-                      names_to = "change_type"), 
-       aes(x = value)) + geom_histogram() +
-  facet_grid(rows = vars(change_type), cols = vars(percentile), scales = "free")
-```
-
-```{r}
-ggplot(extent_change %>% 
-         pivot_longer(cols = c(absolute_change:annual_change), 
-                      names_to = "change_type") %>%
-         # Filter extreme values, look at them later
-         filter(value < 25 & value > -25), 
-       aes(x = value)) + geom_histogram() +
-  facet_grid(rows = vars(change_type), cols = vars(percentile), scales = "free")
+extent_change %>%
+  dplyr::select(plotID, EUNIS_plot, percentile, absolute_change_ha, relative_change, annual_change_ha) %>%
+  pivot_longer(c(absolute_change_ha, relative_change, annual_change_ha),
+               names_to = "change_type") %>%
+  group_by(change_type, percentile) %>%
+  # Keep only values within 2.5th and 97.5th percentiles to remove extreme outliers
+  filter(between(value,
+                 quantile(value, 0.025, na.rm = TRUE),
+                 quantile(value, 0.975, na.rm = TRUE))) %>%
+  ungroup() %>%
+  ggplot(aes(value)) +
+  geom_histogram(color = "black", fill = "grey") +
+  facet_grid(change_type ~ percentile, scales = "free") +
+  theme_bw() +
+  theme(legend.position = "none")
 ```
 
 ## Change in extent by habitat type
 
 ```{r}
 extent_change %>%
-  pivot_longer(
-    absolute_change:annual_change,
-    names_to = "change_type"
-  ) %>%
-  ggplot(
-    aes(
-      EUNIS_plot,
-      value,
-      fill = EUNIS_plot
-    )
-  ) +
-  geom_violin() +
-  facet_grid(
-    change_type ~ percentile,
-    scales = "free_y"
-  ) +
+  dplyr::select(plotID, EUNIS_plot, percentile, absolute_change_ha, relative_change, annual_change_ha) %>%
+  pivot_longer(c(absolute_change_ha, relative_change, annual_change_ha),
+               names_to = "change_type") %>%
+  group_by(change_type, percentile) %>%
+  # Keep only values within 2.5th and 97.5th percentiles to remove extreme outliers
+  filter(between(value,
+                 quantile(value, 0.025, na.rm = TRUE),
+                 quantile(value, 0.975, na.rm = TRUE))) %>%
+  ungroup() %>%
+  ggplot(aes(EUNIS_plot, value, fill = EUNIS_plot)) +
+  geom_half_violin(side = "r", alpha = 0.8, position = position_nudge(x = 0.2)) +
+  geom_point(aes(y = value, color = EUNIS_plot),
+             position = position_jitter(width = 0.15), size = 1, alpha = 0.1) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8) +
+  facet_grid(change_type ~ percentile, scales = "free") +
   theme_bw() +
-  theme(
-    legend.position = "none"
-  )
+  theme(legend.position = "none")
 ```
+
+## Change in extent by bioregion
 
 ```{r}
 extent_change %>%
+  dplyr::select(plotID, BIOGEO, percentile, absolute_change_ha,
+                relative_change, annual_change_ha) %>%
+  pivot_longer(c(absolute_change_ha, relative_change, annual_change_ha),
+               names_to = "change_type") %>%
+  group_by(change_type, percentile) %>%
+  # Keep only values within 2.5th and 97.5th percentiles to remove extreme outliers
+  filter(between(value,
+                 quantile(value, 0.025, na.rm = TRUE),
+                 quantile(value, 0.975, na.rm = TRUE))) %>%
+  ungroup() %>%
+  ggplot(aes(BIOGEO, value, fill = BIOGEO)) +
+  geom_half_violin(side = "r", alpha = 0.8, position = position_nudge(x = 0.2)) +
+  geom_point(aes(y = value, color = BIOGEO),
+             position = position_jitter(width = 0.15), size = 1, alpha = 0.1) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8) +
+  facet_grid(change_type ~ percentile, scales = "free") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+## Change in extent by habitat type for each bioregion
+
+See how many plots are in each bioregion and habitat type combination. Careful! Some combinations have very few plots. 
+
+```{r}
+extent_change %>% distinct(plotID, EUNIS_plot, BIOGEO) %>% count(BIOGEO, EUNIS_plot)
+```
+
+```{r}
+plot_data <- extent_change %>%
+  st_drop_geometry() %>%
+  dplyr::select(plotID, BIOGEO, EUNIS_plot, percentile,
+         absolute_change_ha, relative_change, annual_change_ha) %>%
   pivot_longer(
-    absolute_change:annual_change,
+    c(absolute_change_ha, relative_change, annual_change_ha),
     names_to = "change_type"
   ) %>%
-  # Filter extreme values, look at them later
-  filter(value < 25 & value > -25) %>%
-  ggplot(
-    aes(
-      EUNIS_plot,
+  group_by(change_type, percentile) %>%
+  filter(
+    between(
       value,
-      fill = EUNIS_plot
+      quantile(value, 0.025, na.rm = TRUE),
+      quantile(value, 0.975, na.rm = TRUE)
     )
-  ) +
-  geom_violin() +
-  facet_grid(
-    change_type ~ percentile,
-    scales = "free_y"
-  ) +
-  theme_bw() +
-  theme(
-    legend.position = "none"
-  )
-```
-
-## Change in extent by biogeographical region
-
-```{r}
-extent_change_sf %>%
-  pivot_longer(
-    absolute_change:annual_change,
-    names_to = "change_type"
   ) %>%
-  ggplot(
-    aes(
-      BIOGEO,
-      value,
-      fill = BIOGEO
-    )
-  ) +
-  geom_violin() +
-  facet_grid(
-    change_type ~ percentile,
-    scales = "free_y"
-  ) +
+  ungroup() %>%
+  group_by(BIOGEO, EUNIS_plot, percentile, change_type) %>%
+  # Removed PAN - Change with 1 plot
+  filter(n() >= 2) %>%
+  ungroup()
+
+plots_biogeo <- plot_data %>%
+  split(.$BIOGEO) %>%
+  purrr::map(~ ggplot(.x,
+                      aes(EUNIS_plot, value, fill = EUNIS_plot)) +
+               geom_half_violin(
+                 side = "r",
+                 alpha = 0.8,
+                 position = position_nudge(x = 0.2)
+               ) +
+               geom_point(
+                 aes(color = EUNIS_plot),
+                 position = position_jitter(width = 0.15),
+                 size = 1,
+                 alpha = 0.1
+               ) +
+               geom_boxplot(
+                 width = 0.2,
+                 outlier.shape = NA,
+                 alpha = 0.8
+               ) +
+               facet_grid(
+                 change_type ~ percentile,
+                 scales = "free"
+               ) +
+               labs(title = unique(.x$BIOGEO)) +
+               theme_bw() +
+               theme(legend.position = "none"))
+plots_biogeo
+```
+
+## Change in extent by years_between
+
+```{r}
+extent_change %>%
+  dplyr::select(plotID, EUNIS_plot, years_between, percentile, 
+                absolute_change_ha, relative_change, annual_change_ha) %>%
+  pivot_longer(c(absolute_change_ha, relative_change, annual_change_ha),
+               names_to = "change_type") %>%
+  group_by(change_type, percentile) %>%
+  # Keep only values within 2.5th and 97.5th percentiles to remove extreme outliers
+  filter(between(value,
+                 quantile(value, 0.025, na.rm = TRUE),
+                 quantile(value, 0.975, na.rm = TRUE))) %>%
+  ungroup() %>%
+  ggplot(aes(years_between, value, color = EUNIS_plot)) +
+  # geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm") +
+  facet_grid(change_type ~ percentile, scales = "free") +
   theme_bw() +
-  theme(
-    legend.position = "none"
-  )
+  theme(legend.position = "top")
+```
+
+# Models extent ~ years between + initial year
+
+```{r}
+model_extent_maha_05 <- lm(abs(absolute_change_ha) ~ years_between * first_year, 
+                   data = extent_change %>% filter(percentile == 0.5))
+model_extent_maha_07 <- lm(abs(absolute_change_ha) ~ years_between * first_year, 
+                   data = extent_change %>% filter(percentile == 0.7))
+model_extent_maha_09 <- lm(abs(absolute_change_ha) ~ years_between * first_year, 
+                   data = extent_change %>% filter(percentile == 0.9))
 ```
 
 ```{r}
-extent_change_sf %>%
-  pivot_longer(
-    absolute_change:annual_change,
-    names_to = "change_type"
-  ) %>%
-  # Filter extreme values, look at them later
-  filter(value < 25 & value > -25) %>%
-  ggplot(
-    aes(
-      BIOGEO,
-      value,
-      fill = BIOGEO
-    )
-  ) +
-  geom_violin() +
-  facet_grid(
-    change_type ~ percentile,
-    scales = "free_y"
-  ) +
-  theme_bw() +
-  theme(
-    legend.position = "none"
-  )
-```
-
-# Maps extreme values of change
-
-## Extract PlotObservationID from raster filenames
-
-```{r}
-get_id <- function(x) {
-  id <- str_extract(x, "(?<=Obs)\\d+")
-  as.numeric(id)
-}
-
-raster_ids <- data.frame(
-  file = raster_files_proj,
-  PlotObservationID = sapply(raster_files_proj, get_id)
-)
-sum(is.na(raster_ids$PlotObservationID))
-```
-
-## Select points
-
-```{r}
-plotIDs_extreme <- extent_change %>%
-         filter(absolute_change >= 25 | absolute_change <= -25) %>%
-  distinct(plotID) %>% pull(plotID)
-plots_extreme <- extent_val_plots_first_last %>% 
-  filter(plotID %in% plotIDs_extreme)
-```
-
-## Export to kml
-
-```{r}
-points_kml <- plots_extreme %>%
-  st_transform(4326) %>%
-  distinct(plotID, .keep_all = TRUE) %>%
-  mutate(
-    Name = plotID
-  )
-
-st_write(
-  points_kml["Name"],
-  here("kml", "plot_points.kml"),
-  delete_dsn = TRUE
-)
+summary(model_extent_maha_05)
+summary(model_extent_maha_07)
+summary(model_extent_maha_09)
 ```
 
 # Maps Mahalanobis
@@ -954,6 +971,7 @@ st_write(
 ```{r}
 tmap_mode("plot")  # for exporting
 ```
+
 Select one "good" plot:
 
 ```{r}
@@ -1251,8 +1269,8 @@ for (plot_id in plot_ids) {
 
         tm_shape(pol_sf_hab) +
         tm_fill(
-          col = "gold1",
-          alpha = 0.6
+          fill = "gold1",
+          fill_alpha = 0.6
         ) +
 
         tm_shape(pt) +
