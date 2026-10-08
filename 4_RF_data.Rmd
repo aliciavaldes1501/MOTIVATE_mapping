@@ -26,23 +26,1450 @@ library(dplyr)
 library(tidyr)
 library(readr)
 library(here)
-library(purrr)
-library(broom)
-library(MASS)
-library(ggplot2)
 library(corrplot)
+library(ggplot2)
+library(gghalves)
+library(car)
+library(emmeans)
+library(multcomp)
+library(ggeffects)
+library(patchwork)
+library(stringr)
 ```
 
 # Load data
 
 ```{r}
 # Data of plots with constant habitat
-RF_data_nochange <- read_csv(here("data", "RF", "MOTIVATE_ALL_V1_SPECTRAL"))
+RF_data_nochange <- read_csv(here("data", "RF", "MOTIVATE_ALL_V1_SPECTRAL.csv"))
 # Data of plots with habitat change
-RF_data_change <- readRDS(here("data", "RF", "MOTIVATE_CHANGE_ALL_V1_SPECTRAL"))
+RF_data_change <- read_csv(here("data", "RF", "MOTIVATE_CHANGE_ALL_V1_SPECTRAL.csv"))
+```
+
+# Load initial dataset from validation
+
+Initial dataset with info on EUNIS 2.
+
+```{r}
+initial_dataset <- read_csv(here("..", "MOTIVATE_validation", "data", "clean",
+                                 "ReSurvey_QRST_data_V2025.2_20261007.csv"))
+```
+
+# Remove plots with habitat change from dataset of plots with constant habitat
+
+```{r}
+RF_data_nochange <- RF_data_nochange %>%
+  filter(!plot_id %in% RF_data_change$plot_id)
+```
+
+# HERE: Check some columns that seem to be duplicated
+
+```{r}
+RF_data_nochange  %>% filter(coalesce(eunis1, "NA") != coalesce(EUNIS1, "NA"))
+RF_data_nochange  %>% filter(is.na(eunis1))
+RF_data_nochange  %>% filter(coalesce(biogeo, "NA") != coalesce(BIOGEO, "NA"))
+RF_data_nochange  %>% filter(is.na(biogeo))
+RF_data_nochange  %>% filter(first_year.x != first_year.y) # 3 plots
+RF_data_nochange  %>% filter(last_year.x != last_year.y)
+RF_data_nochange  %>% filter(years_between.x != years_between.y) # 3 plots
+```
+
+Check with my data which first_year is correct!
+
+```{r}
+RF_data_change  %>% filter(coalesce(biogeo, "NA") != coalesce(BIOGEO, "NA"))
+RF_data_change %>% filter(is.na(biogeo))
+RF_data_change  %>% filter(first_year.x != first_year.y)
+RF_data_change  %>% filter(last_year.x != last_year.y)
+RF_data_change  %>% filter(years_between.x != years_between.y)
+```
+
+## Remove duplicated columns and rename remaining ones
+
+```{r}
+RF_data_nochange <- RF_data_nochange %>%
+  # TBD for first_year and years_between!
+  dplyr::select(-EUNIS1, -BIOGEO, -last_year.y) %>%
+  rename(last_year = last_year.x)
+```
+
+```{r}
+RF_data_change <- RF_data_change %>%
+  dplyr::select(-BIOGEO)
+```
+
+## Join plots with constant habitat and plots with habitat change
+
+```{r}
+RF_data_change <- RF_data_change %>% 
+  dplyr::select(-EUNIS1, -last_year.y) %>%
+  # Set eunis1 as "Change" for plots with habitat change
+  mutate(eunis1 = "Change") %>%
+  rename(last_year = last_year.x)
 ```
 
 
+```{r}
+RF_data <- bind_rows(RF_data_nochange, RF_data_change)
+```
+
+## Fix plotIDs in RF_data
+
+Gonzalo used RS_CODE instead of Resurvey project as first part of plot_id.
+
+Retrieve list of correspondences of RS_CODE and Resurvey project from original data:
+
+```{r}
+correspondence_list <- initial_dataset %>%
+  distinct(RS_CODE, `ReSurvey project`)
+```
+
+```{r}
+RF_data <- RF_data %>%
+  # Add spaces before and after "-"
+  mutate(plotID = str_replace_all(plot_id, "-", " - ")) %>%
+  # Get RS_CODE: first part of plot_id, before first "-"
+  mutate(RS_CODE = sub("-.*", "", plot_id)) %>%
+  # Join to get Resurvey project
+  left_join(correspondence_list) %>%
+  # Construct new plotID
+  mutate(plotID = str_replace(plotID, paste0("^", RS_CODE), 
+                              `ReSurvey project`)) %>%
+  # Remove unneeded columns
+  dplyr::select(-plot_id, -RS_CODE, -`ReSurvey project`) %>%
+  # Modify some plotIDs
+  mutate(
+    plotID = str_replace(
+      plotID,
+      "^AOPK_HabitatMonitoring - PolickeSteny - Signal -",
+      "AOPK_HabitatMonitoring - PolickeSteny-Signal -"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^Ecohydrology of Floodplain Meadows - ([0-9]+) - \\1\\s+-\\s+",
+      "Ecohydrology of Floodplain Meadows - \\1 - \\1-"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^PSET Puy Long - PuyLong - PSET 0 - 1",
+      "PSET Puy Long - PuyLong - PSET 0-1"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^PSET Puy Long - PuyLong - PSET ([0-9]+) - ([0-9]+)",
+      "PSET Puy Long - PuyLong - PSET \\1-\\2"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^Role of AES schemes on the grasslands biodiversity - ([0-9]+) - ([0-9]+) - ([0-9]+) - \\1 - \\2 - \\3(_[0-9]+)?$",
+      "Role of AES schemes on the grasslands biodiversity - \\1-\\2-\\3 - \\1-\\2-\\3\\4"
+      )
+    )
+```
+
+Two types of plot IDs:
+
+```{r}
+RF_data <- RF_data %>%
+  # Without spaces before and after "-"
+  mutate(plot_id = str_replace_all(plotID, " - ", "-")) %>%
+  # With spaces before and after "-"
+  rename(plot_id_spaced = plotID)
+```
+
+## Add EUNIS level 2 
+
+Useful for some analyses.
+
+```{r}
+data_eunis <- initial_dataset %>% 
+  dplyr::select(PlotObservationID, `ReSurvey project`, RS_CODE, `ReSurvey site`, 
+                `ReSurvey plot`, year, plotID_AV, EUNIS1, EUNIS2) %>%
+  # Remove spaces in plot_id
+  mutate(plot_id = str_replace_all(plotID_AV, " - ", "-")) %>% 
+  # Remove unneeded columns
+  dplyr::select(-PlotObservationID, -`ReSurvey project`, -RS_CODE, 
+                -`ReSurvey site`, -`ReSurvey plot`, -plotID_AV) %>%
+  # Keep only plot IDs in RF_data
+  filter(plot_id %in% RF_data$plot_id) %>% 
+  # To check match with EUNIS 1 in RF data
+  rename(EUNIS1_check = EUNIS1)
+```
+
+```{r}
+RF_data <- RF_data %>%
+  left_join(data_eunis %>% rename(first_year.x = year, 
+                                  EUNIS1_check_first = EUNIS1_check,
+                                  eunis2_first = EUNIS2),
+            by = c("plot_id", "first_year.x")) %>%
+  left_join(data_eunis %>% rename(last_year = year, 
+                                  EUNIS1_check_last = EUNIS1_check,
+                                  eunis2_last = EUNIS2),
+            by = c("plot_id", "last_year"))
+```
+
+Some checks:
+
+```{r}
+RF_data %>% filter(eunis_cambio == F & eunis1 != EUNIS1_check_first)
+RF_data %>% filter(eunis_cambio == F & eunis1 != EUNIS1_check_last)
+RF_data %>% filter(eunis_cambio == T & eunis_first != EUNIS1_check_first)
+RF_data %>% filter(eunis_cambio == T & eunis_last != EUNIS1_check_last)
+```
+
+All OK.
+
+```{r}
+RF_data <- RF_data %>%
+  # Remove unneeded columns
+  dplyr::select(-EUNIS1_check_first, -EUNIS1_check_last) %>%
+  # create eunis2 column
+  mutate(eunis2 = case_when(
+    eunis1 == "Change" ~ "Change",
+    eunis2_first == eunis2_last ~ eunis2_first,
+    !is.na(eunis2_first) & is.na(eunis2_last) ~ eunis2_first,
+    is.na(eunis2_first) & !is.na(eunis2_last) ~ eunis2_last,
+    eunis2_first != eunis2_last ~ "Change"
+    ))
+```
+
+## Save as .rds
+
+```{r}
+saveRDS(RF_data, here("data", "clean", "RF_data.rds"))
+```
+
+# Change in extent
+
+## Plots with constant habitat
+
+### Change in extent by habitat type 
+
+```{r}
+mod_extent_eunis1_noch <- lm(delta_focal_pct ~ eunis1, 
+                             data = RF_data %>% filter(eunis_cambio == F))
+Anova(mod_extent_eunis1_noch)
+```
+
+```{r}
+emmeans(mod_extent_eunis1_noch, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_extent_eunis1_noch)$r.squared
+```
+
+### Change in extent by number of years between first and last survey
+
+```{r}
+mod_extent_yrs_eunis1_noch <- lm(abs(delta_focal_pct) ~ years_between.x * eunis1,
+          data = RF_data %>% filter(eunis_cambio == F))
+Anova(mod_extent_yrs_eunis1_noch)
+summary(mod_extent_yrs_eunis1_noch)
+```
+
+```{r}
+emtrends(mod_extent_yrs_eunis1_noch, pairwise ~ eunis1, var = "years_between.x")
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_extent_yrs_eunis1_noch)$r.squared
+```
+
+### Figure 1
+
+```{r}
+fig1a <- ggplot(RF_data %>% filter(eunis_cambio == F), 
+                aes(x = eunis1, y = delta_focal_pct, fill = eunis1)) +
+  #geom_half_violin(side = "r", alpha = 0.8, position = position_nudge(x = 0.2)) +
+  geom_point(aes(color = eunis1),
+             position = position_jitter(width = 0.25), size = 0.5, alpha = 0.1) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+                linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  # geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8) +
+  # geom_text(data = cld(emmeans(mod_extent_eunis1_noch, ~ eunis1), 
+  #                      Letters = letters) %>%
+  #             as.data.frame(),
+  #           aes(x = eunis1, y = 75, label = .group),
+  #           inherit.aes = FALSE, size = 5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "EUNIS I Habitat type", y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none") 
+fig1a
+```
+
+```{r}
+fig1b <- ggplot(RF_data %>% filter(eunis_cambio == F),
+                aes(x = years_between.x, y = abs(delta_focal_pct), 
+                    color = eunis1, fill = eunis1, group = eunis1)) +
+  # geom_point(size = 1, alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  labs(x = "Number of years between first and last survey",
+       y = "Absolute change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none")
+fig1b
+```
+
+```{r}
+fig1b_alt <- ggplot(RF_data %>% filter(eunis_cambio == F),
+                aes(x = years_between.x, y = delta_focal_pct, 
+                    color = eunis1, fill = eunis1, group = eunis1)) +
+  # geom_point(size = 1, alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "Number of years between first and last survey",
+       y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none")
+fig1b_alt
+```
+
+```{r}
+fig1 <- fig1a + fig1b_alt +
+  plot_layout(ncol = 2) + plot_annotation(tag_levels = list(c("A)", "B)")))
+fig1
+ggsave(fig1, filename = "output/figures/fig1.jpeg", 
+       width = 24, height = 12, units = "cm", dpi = 300)
+```
+
+## Plots with habitat change
+
+### Change in extent by habitat type 
+
+```{r}
+mod_extent_eunis_first_ch <- lm(delta_focal_pct ~ eunis_first,
+                                data = RF_data %>% filter(eunis_cambio == T))
+Anova(mod_extent_eunis_first_ch)
+```
+
+```{r}
+emmeans(mod_extent_eunis_first_ch, pairwise ~ eunis_first)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_extent_eunis_first_ch)$r.squared
+```
+
+### Change in extent by transition type
+
+```{r}
+ggplot(RF_data %>% filter(eunis_cambio == T) %>%
+         left_join(RF_data %>% filter(eunis_cambio == TRUE) %>%
+                     count(transition),
+                   by = "transition") %>%
+         mutate(transition_label = paste0(transition, "\n(n = ", n, ")")),
+       aes(x = transition_label, y = delta_focal_pct, fill = eunis_first)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis_first),
+             position = position_jitter(width = 0.25), size = 2, alpha = 0.2) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(x = "Transition", y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none") 
+```
+
+### Change in extent by number of years between first and last survey
+
+```{r}
+mod_extent_yrs_eunis_first_ch <- lm(abs(delta_focal_pct) ~ 
+                                 years_between.x * eunis_first,
+          data = RF_data %>% filter(eunis_cambio == T))
+Anova(mod_extent_yrs_eunis_first_ch)
+summary(mod_extent_yrs_eunis_first_ch)
+```
+
+```{r}
+mod_extent_yrs_ch <- lm(abs(delta_focal_pct) ~ years_between.x ,
+                        data = RF_data %>% filter(eunis_cambio == T))
+Anova(mod_extent_yrs_ch)
+summary(mod_extent_yrs_ch)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_extent_yrs_eunis_first_ch)$r.squared
+```
+
+### Appendix 1
+
+```{r}
+app1 <- ggplot(RF_data %>% filter(eunis_cambio == T),
+                aes(x = eunis_first, y = delta_focal_pct, fill = eunis_first)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  #geom_half_violin(side = "r", alpha = 0.8, position = position_nudge(x = 0.2)) +
+  geom_point(aes(color = eunis_first),
+             position = position_jitter(width = 0.25), size = 2, alpha = 0.2) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  # geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8) +
+  # geom_text(data = cld(emmeans(mod_extent_eunis1_ch, ~ eunis_first), 
+  #                      Letters = letters) %>%
+  #             as.data.frame(),
+  #           aes(x = eunis_first, y = 75, label = .group),
+  #           inherit.aes = FALSE, size = 5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(x = "Original EUNIS I Habitat type", y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none") 
+app1
+ggsave(app1, filename = "output/figures/app1.jpeg", 
+       width = 12, height = 12, units = "cm", dpi = 300)
+```
+
+# Change in extent by bioregion
+
+## Plots with constant habitat
+
+```{r}
+table((RF_data %>% filter(eunis_cambio == F))$eunis1, 
+      (RF_data %>% filter(eunis_cambio == F))$biogeo)
+```
+
+### Change in extent by habitat type 
+
+```{r}
+mod_extent_eunis1_noch_ALP <- lm(delta_focal_pct ~ eunis1,
+                                 data = RF_data %>% filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ALP"))
+mod_extent_eunis1_noch_ATL <- lm(delta_focal_pct ~ eunis1,
+                                 data = RF_data %>% filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ATL"))
+mod_extent_eunis1_noch_CON <- lm(delta_focal_pct ~ eunis1,
+                                 data = RF_data %>% filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "CON"))
+# Not possible in MED because all are R
+mod_extent_eunis1_noch_PAN <- lm(delta_focal_pct ~ eunis1,
+                                 data = RF_data %>% filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "PAN"))
+Anova(mod_extent_eunis1_noch_ALP)
+Anova(mod_extent_eunis1_noch_ATL)
+Anova(mod_extent_eunis1_noch_CON)
+Anova(mod_extent_eunis1_noch_PAN)
+```
+
+```{r}
+emmeans(mod_extent_eunis1_noch_ATL, pairwise ~ eunis1)
+emmeans(mod_extent_eunis1_noch_CON, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_extent_eunis1_noch_ALP)$r.squared
+summary(mod_extent_eunis1_noch_ATL)$r.squared
+summary(mod_extent_eunis1_noch_CON)$r.squared
+summary(mod_extent_eunis1_noch_PAN)$r.squared
+```
+
+### Change in extent by number of years between first and last survey
+
+```{r}
+mod_extent_yrs_noch_ALP <- lm(abs(delta_focal_pct) ~ years_between.x,
+                                     data = RF_data %>% 
+                                filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ALP"))
+mod_extent_yrs_noch_ATL <- lm(abs(delta_focal_pct) ~ years_between.x,
+                                     data = RF_data %>% 
+                                filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ATL"))
+mod_extent_yrs_noch_CON <- lm(abs(delta_focal_pct) ~ years_between.x,
+                                     data = RF_data %>% 
+                                filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "CON"))
+mod_extent_yrs_noch_MED <- lm(abs(delta_focal_pct) ~ years_between.x,
+                                     data = RF_data %>% 
+                                filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "MED"))
+mod_extent_yrs_noch_PAN <- lm(abs(delta_focal_pct) ~ years_between.x,
+                                     data = RF_data %>% 
+                                filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "PAN"))
+Anova(mod_extent_yrs_noch_ALP)
+Anova(mod_extent_yrs_noch_ATL)
+Anova(mod_extent_yrs_noch_CON)
+Anova(mod_extent_yrs_noch_MED)
+Anova(mod_extent_yrs_noch_PAN)
+summary(mod_extent_yrs_noch_ALP)
+summary(mod_extent_yrs_noch_ATL)
+summary(mod_extent_yrs_noch_CON)
+summary(mod_extent_yrs_noch_MED)
+summary(mod_extent_yrs_noch_PAN)
+```
+
+## Plots with habitat change
+
+```{r}
+table((RF_data %>% filter(eunis_cambio == T))$eunis_first, 
+      (RF_data %>% filter(eunis_cambio == T))$biogeo)
+```
+
+### Change in extent by habitat type 
+
+```{r}
+mod_extent_eunis_first_ch_ALP <- lm(delta_focal_pct ~ eunis_first, 
+                                    data = RF_data %>% 
+                                      filter(eunis_cambio == T) %>% 
+                                      filter(biogeo == "ALP"))
+mod_extent_eunis_first_ch_ATL <- lm(delta_focal_pct ~ eunis_first, 
+                                    data = RF_data %>% 
+                                      filter(eunis_cambio == T) %>% 
+                                      filter(biogeo == "ATL"))
+mod_extent_eunis_first_ch_CON <- lm(delta_focal_pct ~ eunis_first, 
+                                    data = RF_data %>% 
+                                      filter(eunis_cambio == T) %>% 
+                                      filter(biogeo == "CON"))
+Anova(mod_extent_eunis_first_ch_ALP)
+Anova(mod_extent_eunis_first_ch_ATL)
+Anova(mod_extent_eunis_first_ch_CON)
+```
+
+```{r}
+emmeans(mod_extent_eunis_first_ch_ATL, pairwise ~ eunis_first)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_extent_eunis_first_ch_ALP)$r.squared
+summary(mod_extent_eunis_first_ch_ATL)$r.squared
+summary(mod_extent_eunis_first_ch_CON)$r.squared
+```
+
+### Change in extent by number of years between first and last survey
+
+```{r}
+mod_extent_yrs_ch_ALP <- lm(abs(delta_focal_pct) ~ years_between.x,
+          data = RF_data %>% filter(eunis_cambio == T) %>% 
+            filter(biogeo == "ALP"))
+mod_extent_yrs_ch_ATL <- lm(abs(delta_focal_pct) ~ years_between.x,
+          data = RF_data %>% filter(eunis_cambio == T) %>% 
+            filter(biogeo == "ATL"))
+mod_extent_yrs_ch_CON <- lm(abs(delta_focal_pct) ~ years_between.x,
+          data = RF_data %>% filter(eunis_cambio == T) %>% 
+            filter(biogeo == "CON"))
+Anova(mod_extent_yrs_ch_ALP)
+Anova(mod_extent_yrs_ch_ATL)
+Anova(mod_extent_yrs_ch_CON)
+summary(mod_extent_yrs_ch_ALP)
+summary(mod_extent_yrs_ch_ATL)
+summary(mod_extent_yrs_ch_CON)
+```
+
+## Appendix 2
+
+```{r}
+app2 <- ggplot(RF_data %>%
+         mutate(hab = ifelse(eunis_cambio == F, eunis1, eunis_first)) %>%
+         mutate(cat = factor(ifelse(eunis_cambio == FALSE, "Constant", "Change"),
+                             levels = c("Constant", "Change"))), 
+       aes(x = hab, y = delta_focal_pct, fill = hab)) +
+  geom_point(aes(color = hab, alpha = cat),
+             position = position_jitter(width = 0.25), size = 1) +
+  scale_alpha_manual(
+    values = c("Constant" = 0.1, "Change" = 0.5), guide = "none") +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+               color = "black", fill = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  facet_grid(rows = vars(cat), cols = vars(biogeo)) +
+  labs(x = "EUNIS I Habitat type", y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none") 
+app2
+ggsave(app2, filename = "output/figures/app2.jpeg", 
+       width = 30, height = 24, units = "cm", dpi = 300)
+```
+
+# Change in functional metrics
+
+## Correlations among functional metrics
+
+```{r}
+RF_data %>%
+  dplyr::select(matches("^(ndvi|savi|ndmi|ndwi)")) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  corrplot(method = "color", type = "upper", addCoef.col = "black",
+           number.cex = 1, tl.col = "black")
+```
+
+## Plots with constant habitat
+
+### Change in functional metrics by habitat type
+
+```{r}
+mod_ndvi_eunis1_noch <- lm(ndvi_resurvey ~ eunis1, 
+                           data = RF_data %>% filter(eunis_cambio == F))
+mod_savi_eunis1_noch <- lm(savi_resurvey ~ eunis1, 
+                           data = RF_data %>% filter(eunis_cambio == F))
+mod_ndmi_eunis1_noch <- lm(ndmi_resurvey ~ eunis1, 
+                           data = RF_data %>% filter(eunis_cambio == F))
+mod_ndwi_eunis1_noch <- lm(ndwi_resurvey ~ eunis1, 
+                           data = RF_data %>% filter(eunis_cambio == F))
+Anova(mod_ndvi_eunis1_noch)
+Anova(mod_savi_eunis1_noch)
+Anova(mod_ndmi_eunis1_noch)
+Anova(mod_ndwi_eunis1_noch)
+```
+
+```{r}
+emmeans(mod_ndvi_eunis1_noch, pairwise ~ eunis1)
+emmeans(mod_savi_eunis1_noch, pairwise ~ eunis1)
+emmeans(mod_ndmi_eunis1_noch, pairwise ~ eunis1)
+emmeans(mod_ndwi_eunis1_noch, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndvi_eunis1_noch)$r.squared
+summary(mod_savi_eunis1_noch)$r.squared
+summary(mod_ndmi_eunis1_noch)$r.squared
+summary(mod_ndwi_eunis1_noch)$r.squared
+```
+
+### Figure 2
+
+```{r}
+fig2 <- ggplot(RF_data %>% filter(eunis_cambio == F) %>%
+                  pivot_longer(cols = c(ndvi_resurvey, savi_resurvey,
+                                        ndmi_resurvey, ndwi_resurvey), 
+                               names_to = "index", values_to = "value") %>%
+                  mutate(index = factor(index, 
+                                        levels = c("ndvi_resurvey", 
+                                                   "savi_resurvey",
+                                                   "ndmi_resurvey", 
+                                                   "ndwi_resurvey"),
+                                        labels = c("NDVI", "SAVI", "NDMI", 
+                                                   "NDWI"))), 
+                aes(x = eunis1, y = value, fill = eunis1)) +
+  geom_point(aes(color = eunis1),
+             position = position_jitter(width = 0.25), size = 0.5, alpha = 0.1) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+                linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  facet_wrap(~ index, ncol = 2, scales = "free") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "EUNIS I Habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none") 
+fig2
+ggsave(fig2, filename = "output/figures/fig2.jpeg", 
+       width = 24, height = 24, units = "cm", dpi = 300)
+```
+
+## Level II
+
+```{r}
+# Prepare data
+plot_data_eunis2 <- RF_data %>%
+  filter(eunis_cambio == FALSE) %>%
+  filter(eunis2 != "Change") %>%
+  pivot_longer(cols = c(ndvi_resurvey, savi_resurvey, ndmi_resurvey, 
+                        ndwi_resurvey),
+               names_to = "index", values_to = "value") %>%
+  mutate(index = factor(index,
+                        levels = c("ndvi_resurvey", "savi_resurvey",
+                                   "ndmi_resurvey", "ndwi_resurvey"),
+                        labels = c("NDVI", "SAVI", "NDMI", "NDWI")))
+
+# Sample sizes per EUNIS II class
+eunis2_counts <- plot_data_eunis2 %>%
+  distinct(plot_id, eunis2) %>%   # avoids counting same plot several times
+  count(eunis2)
+
+# Add labels containing habitat name + n
+plot_data_eunis2 <- plot_data_eunis2 %>%
+  left_join(eunis2_counts, by = "eunis2") %>%
+  mutate(eunis2_label = paste0(eunis2, "\n(n=", n, ")"))
+```
+
+```{r}
+ggplot(plot_data_eunis2 %>%
+         # Keep eunis2 with > 10 observations
+         filter(n > 10) %>%
+         filter(index == "NDVI"), 
+       aes(x = eunis2_label, y = value, fill = eunis1)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis1), position = position_jitter(width = 0.25),
+             size = 0.5, alpha = 0.3) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, ncol = 1, scales = "free") +
+  labs(x = "EUNIS II habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(size = 8, lineheight = 0.9))
+```
+
+```{r}
+ggplot(plot_data_eunis2 %>%
+         # Keep eunis2 with > 10 observations
+         filter(n > 10) %>%
+         filter(index == "SAVI"), 
+       aes(x = eunis2_label, y = value, fill = eunis1)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis1), position = position_jitter(width = 0.25),
+             size = 0.5, alpha = 0.3) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, ncol = 1, scales = "free") +
+  labs(x = "EUNIS II habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(size = 8, lineheight = 0.9))
+```
+
+```{r}
+ggplot(plot_data_eunis2 %>%
+         # Keep eunis2 with > 10 observations
+         filter(n > 10) %>%
+         filter(index == "NDMI"), 
+       aes(x = eunis2_label, y = value, fill = eunis1)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis1), position = position_jitter(width = 0.25),
+             size = 0.5, alpha = 0.3) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, ncol = 1, scales = "free") +
+  labs(x = "EUNIS II habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(size = 8, lineheight = 0.9))
+```
+
+```{r}
+ggplot(plot_data_eunis2 %>%
+         # Keep eunis2 with > 10 observations
+         filter(n > 10) %>%
+         filter(index == "NDWI"), 
+       aes(x = eunis2_label, y = value, fill = eunis1)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis1), position = position_jitter(width = 0.25),
+             size = 0.5, alpha = 0.3) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, ncol = 1, scales = "free") +
+  labs(x = "EUNIS II habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(size = 8, lineheight = 0.9))
+```
+
+### SAVI & NDWI in R
+
+```{r}
+ggplot(plot_data_eunis2 %>%
+         # Keep eunis2 with > 10 observations
+         filter(n > 10) %>%
+         filter(index %in% c("SAVI", "NDWI") & eunis1 == "R"), 
+       aes(x = eunis2_label, y = value)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(position = position_jitter(width = 0.25),
+             size = 1, alpha = 0.3, color = "#7CAE00") +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, ncol = 2, scales = "free") +
+  labs(x = "EUNIS II habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(size = 8, lineheight = 0.9))
+```
+
+### NDMI & NDWI in R
+
+```{r}
+ggplot(plot_data_eunis2 %>%
+         # Keep eunis2 with > 10 observations
+         filter(n > 10) %>%
+         filter(index %in% c("NDMI", "NDWI") & eunis1 == "Q"), 
+       aes(x = eunis2_label, y = value)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(position = position_jitter(width = 0.25),
+             size = 1, alpha = 0.4, color = "#F8766D") +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, ncol = 2, scales = "free") +
+  labs(x = "EUNIS II habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(size = 8, lineheight = 0.9))
+```
+
+### Test with R
+
+```{r}
+mod_ndvi_eunis2R_noch <- lm(ndvi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "R" &
+                                      eunis2 != "Change"))
+mod_savi_eunis2R_noch <- lm(savi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "R" &
+                                      eunis2 != "Change"))
+mod_ndmi_eunis2R_noch <- lm(ndmi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "R" &
+                                      eunis2 != "Change"))
+mod_ndwi_eunis2R_noch <- lm(ndwi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "R" &
+                                      eunis2 != "Change"))
+Anova(mod_ndvi_eunis2R_noch)
+Anova(mod_savi_eunis2R_noch)
+Anova(mod_ndmi_eunis2R_noch)
+Anova(mod_ndwi_eunis2R_noch)
+```
+
+```{r}
+emmeans(mod_ndvi_eunis2R_noch, pairwise ~ eunis2)
+emmeans(mod_savi_eunis2R_noch, pairwise ~ eunis2)
+emmeans(mod_ndmi_eunis2R_noch, pairwise ~ eunis2)
+emmeans(mod_ndwi_eunis2R_noch, pairwise ~ eunis2)
+```
+
+### Test with Q
+
+```{r}
+mod_ndvi_eunis2Q_noch <- lm(ndvi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "Q" &
+                                      eunis2 != "Change"))
+mod_savi_eunis2Q_noch <- lm(savi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "Q" &
+                                      eunis2 != "Change"))
+mod_ndmi_eunis2Q_noch <- lm(ndmi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                           filter(eunis_cambio == F & eunis1 == "Q" &
+                                      eunis2 != "Change"))
+mod_ndwi_eunis2Q_noch <- lm(ndwi_resurvey ~ eunis2, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & eunis1 == "Q" &
+                                      eunis2 != "Change"))
+Anova(mod_ndvi_eunis2Q_noch)
+Anova(mod_savi_eunis2Q_noch)
+Anova(mod_ndmi_eunis2Q_noch)
+Anova(mod_ndwi_eunis2Q_noch)
+```
+
+```{r}
+emmeans(mod_ndmi_eunis2Q_noch, pairwise ~ eunis2)
+emmeans(mod_ndwi_eunis2Q_noch, pairwise ~ eunis2)
+```
+
+## Plots with habitat change
+
+### Change in functional metrics by habitat type
+
+```{r}
+mod_ndvi_eunis1_ch <- lm(ndvi_resurvey ~ eunis_first, 
+                         data = RF_data %>% filter(eunis_cambio == T))
+mod_savi_eunis1_ch <- lm(savi_resurvey ~ eunis_first, 
+                         data = RF_data %>% filter(eunis_cambio == T))
+mod_ndmi_eunis1_ch <- lm(ndmi_resurvey ~ eunis_first, 
+                         data = RF_data %>% filter(eunis_cambio == T))
+mod_ndwi_eunis1_ch <- lm(ndwi_resurvey ~ eunis_first, 
+                         data = RF_data %>% filter(eunis_cambio == T))
+Anova(mod_ndvi_eunis1_ch)
+Anova(mod_savi_eunis1_ch)
+Anova(mod_ndmi_eunis1_ch)
+Anova(mod_ndwi_eunis1_ch)
+```
+
+```{r}
+emmeans(mod_ndvi_eunis1_ch, pairwise ~ eunis_first)
+emmeans(mod_savi_eunis1_ch, pairwise ~ eunis_first)
+emmeans(mod_ndmi_eunis1_ch, pairwise ~ eunis_first)
+emmeans(mod_ndwi_eunis1_ch, pairwise ~ eunis_first)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndvi_eunis1_ch)$r.squared
+summary(mod_savi_eunis1_ch)$r.squared
+summary(mod_ndmi_eunis1_ch)$r.squared
+summary(mod_ndwi_eunis1_ch)$r.squared
+```
+
+#### Appendix 3
+
+```{r}
+app3 <- ggplot(RF_data %>% filter(eunis_cambio == T) %>%
+                  pivot_longer(cols = c(ndvi_resurvey, savi_resurvey,
+                                        ndmi_resurvey, ndwi_resurvey), 
+                               names_to = "index", values_to = "value") %>%
+                  mutate(index = factor(index, 
+                                        levels = c("ndvi_resurvey", 
+                                                   "savi_resurvey",
+                                                   "ndmi_resurvey", 
+                                                   "ndwi_resurvey"),
+                                        labels = c("NDVI", "SAVI", "NDMI", 
+                                                   "NDWI"))), 
+                aes(x = eunis_first, y = value, fill = eunis_first)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis_first),
+             position = position_jitter(width = 0.25), size = 2, alpha = 0.2) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~ index, nrow = 2, scales = "free") +
+  labs(x = "Original EUNIS I Habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none") 
+app3
+ggsave(app3, filename = "output/figures/app3.jpeg", 
+       width = 24, height = 24, units = "cm", dpi = 300)
+```
+
+### Change in functional metrics by transition type
+
+```{r}
+ggplot(RF_data %>% filter(eunis_cambio == TRUE) %>%
+         left_join(RF_data %>% filter(eunis_cambio == TRUE) %>%
+                     count(transition),
+                   by = "transition") %>%
+         mutate(transition_label = paste0(transition, "\n(n = ", n, ")")) %>%
+         pivot_longer(cols = c(ndvi_resurvey, savi_resurvey, ndmi_resurvey, 
+                               ndwi_resurvey),
+                      names_to = "index", values_to = "value") %>%
+         mutate(index = factor(index, 
+                               levels = c("ndvi_resurvey", "savi_resurvey",
+                                          "ndmi_resurvey", "ndwi_resurvey"),
+                               labels = c("NDVI", "SAVI", "NDMI", "NDWI"))), 
+       aes(x = transition_label, y = value, fill = eunis_first)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = eunis_first), position = position_jitter(width = 0.25),
+             size = 2, alpha = 0.2) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+               linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2, 
+               color = "black", fill = "black") +
+  facet_wrap(~index, nrow = 2, scales = "free") +
+  labs(x = "Transition", y = "Sen's slope") +
+  theme_bw() + theme(axis.text.x = element_text(size = 8, lineheight = 0.9)) +
+  theme(legend.position = "none")
+```
+
+
+# Change in functional metrics by bioregion
+
+## Plots with constant habitat
+
+```{r}
+table((RF_data %>% filter(eunis_cambio == F))$eunis1, 
+      (RF_data %>% filter(eunis_cambio == F))$biogeo)
+```
+
+### Change in functional metrics by habitat type 
+
+#### NDVI
+
+```{r}
+mod_ndvi_eunis1_noch_ALP <- lm(ndvi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ALP"))
+mod_ndvi_eunis1_noch_ATL <- lm(ndvi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ATL"))
+mod_ndvi_eunis1_noch_CON <- lm(ndvi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "CON"))
+# Not possible in MED because all are R
+mod_ndvi_eunis1_noch_PAN <- lm(ndvi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "PAN"))
+Anova(mod_ndvi_eunis1_noch_ALP)
+Anova(mod_ndvi_eunis1_noch_ATL)
+Anova(mod_ndvi_eunis1_noch_CON)
+Anova(mod_ndvi_eunis1_noch_PAN)
+```
+
+```{r}
+emmeans(mod_ndvi_eunis1_noch_ATL, pairwise ~ eunis1)
+emmeans(mod_ndvi_eunis1_noch_CON, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndvi_eunis1_noch_ALP)$r.squared
+summary(mod_ndvi_eunis1_noch_ATL)$r.squared
+summary(mod_ndvi_eunis1_noch_CON)$r.squared
+summary(mod_ndvi_eunis1_noch_PAN)$r.squared
+```
+
+#### SAVI
+
+```{r}
+mod_savi_eunis1_noch_ALP <- lm(savi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ALP"))
+mod_savi_eunis1_noch_ATL <- lm(savi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ATL"))
+mod_savi_eunis1_noch_CON <- lm(savi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "CON"))
+# Not possible in MED because all are R
+mod_savi_eunis1_noch_PAN <- lm(savi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "PAN"))
+Anova(mod_savi_eunis1_noch_ALP)
+Anova(mod_savi_eunis1_noch_ATL)
+Anova(mod_savi_eunis1_noch_CON)
+Anova(mod_savi_eunis1_noch_PAN)
+```
+
+```{r}
+emmeans(mod_savi_eunis1_noch_ATL, pairwise ~ eunis1)
+emmeans(mod_savi_eunis1_noch_CON, pairwise ~ eunis1)
+emmeans(mod_savi_eunis1_noch_PAN, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_savi_eunis1_noch_ALP)$r.squared
+summary(mod_savi_eunis1_noch_ATL)$r.squared
+summary(mod_savi_eunis1_noch_CON)$r.squared
+summary(mod_savi_eunis1_noch_PAN)$r.squared
+```
+
+#### NDMI
+
+```{r}
+mod_ndmi_eunis1_noch_ALP <- lm(ndmi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ALP"))
+mod_ndmi_eunis1_noch_ATL <- lm(ndmi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ATL"))
+mod_ndmi_eunis1_noch_CON <- lm(ndmi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "CON"))
+# Not possible in MED because all are R
+mod_ndmi_eunis1_noch_PAN <- lm(ndmi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "PAN"))
+Anova(mod_ndmi_eunis1_noch_ALP)
+Anova(mod_ndmi_eunis1_noch_ATL)
+Anova(mod_ndmi_eunis1_noch_CON)
+Anova(mod_ndmi_eunis1_noch_PAN)
+```
+
+```{r}
+emmeans(mod_ndmi_eunis1_noch_ATL, pairwise ~ eunis1)
+emmeans(mod_ndmi_eunis1_noch_CON, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndmi_eunis1_noch_ALP)$r.squared
+summary(mod_ndmi_eunis1_noch_ATL)$r.squared
+summary(mod_ndmi_eunis1_noch_CON)$r.squared
+summary(mod_ndmi_eunis1_noch_PAN)$r.squared
+```
+
+#### NDWI
+
+```{r}
+mod_ndwi_eunis1_noch_ALP <- lm(ndwi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ALP"))
+mod_ndwi_eunis1_noch_ATL <- lm(ndwi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "ATL"))
+mod_ndwi_eunis1_noch_CON <- lm(ndwi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "CON"))
+# Not possible in MED because all are R
+mod_ndwi_eunis1_noch_PAN <- lm(ndwi_resurvey ~ eunis1,
+                                 data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                   filter(biogeo == "PAN"))
+Anova(mod_ndwi_eunis1_noch_ALP)
+Anova(mod_ndwi_eunis1_noch_ATL)
+Anova(mod_ndwi_eunis1_noch_CON)
+Anova(mod_ndwi_eunis1_noch_PAN)
+```
+
+```{r}
+emmeans(mod_ndwi_eunis1_noch_ATL, pairwise ~ eunis1)
+emmeans(mod_ndwi_eunis1_noch_CON, pairwise ~ eunis1)
+emmeans(mod_ndwi_eunis1_noch_PAN, pairwise ~ eunis1)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndwi_eunis1_noch_ALP)$r.squared
+summary(mod_ndwi_eunis1_noch_ATL)$r.squared
+summary(mod_ndwi_eunis1_noch_CON)$r.squared
+summary(mod_ndwi_eunis1_noch_PAN)$r.squared
+```
+
+### Change in functional metrics by number of years between first and last survey
+
+#### NDVI
+
+```{r}
+mod_ndvi_yrs_noch_ALP <- lm(abs(ndvi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ALP"))
+mod_ndvi_yrs_noch_ATL <- lm(abs(ndvi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ATL"))
+mod_ndvi_yrs_noch_CON <- lm(abs(ndvi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "CON"))
+mod_ndvi_yrs_noch_MED <- lm(abs(ndvi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "MED"))
+mod_ndvi_yrs_noch_PAN <- lm(abs(ndvi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "PAN"))
+Anova(mod_ndvi_yrs_noch_ALP)
+Anova(mod_ndvi_yrs_noch_ATL)
+Anova(mod_ndvi_yrs_noch_CON)
+Anova(mod_ndvi_yrs_noch_MED)
+Anova(mod_ndvi_yrs_noch_PAN)
+summary(mod_ndvi_yrs_noch_ALP)
+summary(mod_ndvi_yrs_noch_ATL)
+summary(mod_ndvi_yrs_noch_CON)
+summary(mod_ndvi_yrs_noch_MED)
+summary(mod_ndvi_yrs_noch_PAN)
+```
+
+#### SAVI
+
+```{r}
+mod_savi_yrs_noch_ALP <- lm(abs(savi_resurvey) ~ years_between.x,
+                            data = RF_data %>% 
+                              filter(eunis_cambio == F) %>%
+                              filter(biogeo == "ALP"))
+mod_savi_yrs_noch_ATL <- lm(abs(savi_resurvey) ~ years_between.x,
+                            data = RF_data %>% 
+                              filter(eunis_cambio == F) %>%
+                              filter(biogeo == "ATL"))
+mod_savi_yrs_noch_CON <- lm(abs(savi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                              filter(eunis_cambio == F) %>%
+                              filter(biogeo == "CON"))
+mod_savi_yrs_noch_MED <- lm(abs(savi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                              filter(eunis_cambio == F) %>%
+                              filter(biogeo == "MED"))
+mod_savi_yrs_noch_PAN <- lm(abs(savi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                              filter(eunis_cambio == F) %>%
+                              filter(biogeo == "PAN"))
+Anova(mod_savi_yrs_noch_ALP)
+Anova(mod_savi_yrs_noch_ATL)
+Anova(mod_savi_yrs_noch_CON)
+Anova(mod_savi_yrs_noch_MED)
+Anova(mod_savi_yrs_noch_PAN)
+summary(mod_savi_yrs_noch_ALP)
+summary(mod_savi_yrs_noch_ATL)
+summary(mod_savi_yrs_noch_CON)
+summary(mod_savi_yrs_noch_MED)
+summary(mod_savi_yrs_noch_PAN)
+```
+
+#### NDMI
+
+```{r}
+mod_ndmi_yrs_noch_ALP <- lm(abs(ndmi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ALP"))
+mod_ndmi_yrs_noch_ATL <- lm(abs(ndmi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ATL"))
+mod_ndmi_yrs_noch_CON <- lm(abs(ndmi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "CON"))
+mod_ndmi_yrs_noch_MED <- lm(abs(ndmi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "MED"))
+mod_ndmi_yrs_noch_PAN <- lm(abs(ndmi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "PAN"))
+Anova(mod_ndmi_yrs_noch_ALP)
+Anova(mod_ndmi_yrs_noch_ATL)
+Anova(mod_ndmi_yrs_noch_CON)
+Anova(mod_ndmi_yrs_noch_MED)
+Anova(mod_ndmi_yrs_noch_PAN)
+summary(mod_ndmi_yrs_noch_ALP)
+summary(mod_ndmi_yrs_noch_ATL)
+summary(mod_ndmi_yrs_noch_CON)
+summary(mod_ndmi_yrs_noch_MED)
+summary(mod_ndmi_yrs_noch_PAN)
+```
+
+#### NDWI
+
+```{r}
+mod_ndwi_yrs_noch_ALP <- lm(abs(ndwi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ALP"))
+mod_ndwi_yrs_noch_ATL <- lm(abs(ndwi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "ATL"))
+mod_ndwi_yrs_noch_CON <- lm(abs(ndwi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "CON"))
+mod_ndwi_yrs_noch_MED <- lm(abs(ndwi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "MED"))
+mod_ndwi_yrs_noch_PAN <- lm(abs(ndwi_resurvey) ~ years_between.x,
+                                     data = RF_data %>% 
+                                 filter(eunis_cambio == F) %>%
+                                       filter(biogeo == "PAN"))
+Anova(mod_ndwi_yrs_noch_ALP)
+Anova(mod_ndwi_yrs_noch_ATL)
+Anova(mod_ndwi_yrs_noch_CON)
+Anova(mod_ndwi_yrs_noch_MED)
+Anova(mod_ndwi_yrs_noch_PAN)
+summary(mod_ndwi_yrs_noch_ALP)
+summary(mod_ndwi_yrs_noch_ATL)
+summary(mod_ndwi_yrs_noch_CON)
+summary(mod_ndwi_yrs_noch_MED)
+summary(mod_ndwi_yrs_noch_PAN)
+```
+
+### Appendix 4
+
+```{r}
+app4 <- ggplot(RF_data %>% filter(eunis_cambio == F) %>%
+                 pivot_longer(cols = c(ndvi_resurvey, savi_resurvey,
+                                        ndmi_resurvey, ndwi_resurvey), 
+                               names_to = "index", values_to = "value") %>%
+                  mutate(index = factor(index, 
+                                        levels = c("ndvi_resurvey", 
+                                                   "savi_resurvey",
+                                                   "ndmi_resurvey", 
+                                                   "ndwi_resurvey"),
+                                        labels = c("NDVI", "SAVI", "NDMI", 
+                                                   "NDWI"))), 
+                aes(x = eunis1, y = value, fill = eunis1)) +
+  geom_point(aes(color = eunis1),
+             position = position_jitter(width = 0.25), size = 1, alpha = 0.1) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+                linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  facet_grid(rows = vars(index), cols = vars(biogeo), scales = "free") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "EUNIS I Habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none") 
+app4
+ggsave(app4, filename = "output/figures/app4.jpeg", 
+       width = 36, height = 36, units = "cm", dpi = 300)
+```
+
+## Plots with habitat change
+
+```{r}
+table((RF_data %>% filter(eunis_cambio == T))$eunis_first,
+      (RF_data %>% filter(eunis_cambio == T))$biogeo)
+```
+
+### Change in functional metrics by habitat type 
+
+#### NDVI
+
+```{r}
+mod_ndvi_eunis_first_ch_ALP <- lm(ndvi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ALP"))
+mod_ndvi_eunis_first_ch_ATL <- lm(ndvi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ATL"))
+mod_ndvi_eunis_first_ch_CON <- lm(ndvi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "CON"))
+Anova(mod_ndvi_eunis_first_ch_ALP)
+Anova(mod_ndvi_eunis_first_ch_ATL)
+Anova(mod_ndvi_eunis_first_ch_CON)
+```
+
+```{r}
+emmeans(mod_ndvi_eunis_first_ch_CON, pairwise ~ eunis_first)
+```
+
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndvi_eunis_first_ch_ALP)$r.squared
+summary(mod_ndvi_eunis_first_ch_ATL)$r.squared
+summary(mod_ndvi_eunis_first_ch_CON)$r.squared
+```
+
+#### SAVI
+
+```{r}
+mod_savi_eunis_first_ch_ALP <- lm(savi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ALP"))
+mod_savi_eunis_first_ch_ATL <- lm(savi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ATL"))
+mod_savi_eunis_first_ch_CON <- lm(savi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "CON"))
+Anova(mod_savi_eunis_first_ch_ALP)
+Anova(mod_savi_eunis_first_ch_ATL)
+Anova(mod_savi_eunis_first_ch_CON)
+```
+
+```{r}
+emmeans(mod_savi_eunis_first_ch_CON, pairwise ~ eunis_first)
+```
+
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_savi_eunis_first_ch_ALP)$r.squared
+summary(mod_savi_eunis_first_ch_ATL)$r.squared
+summary(mod_savi_eunis_first_ch_CON)$r.squared
+```
+
+#### NDMI
+
+```{r}
+mod_ndmi_eunis_first_ch_ALP <- lm(ndmi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ALP"))
+mod_ndmi_eunis_first_ch_ATL <- lm(ndmi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ATL"))
+mod_ndmi_eunis_first_ch_CON <- lm(ndmi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "CON"))
+Anova(mod_ndmi_eunis_first_ch_ALP)
+Anova(mod_ndmi_eunis_first_ch_ATL)
+Anova(mod_ndmi_eunis_first_ch_CON)
+```
+
+```{r}
+emmeans(mod_ndmi_eunis_first_ch_CON, pairwise ~ eunis_first)
+```
+
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndmi_eunis_first_ch_ALP)$r.squared
+summary(mod_ndmi_eunis_first_ch_ATL)$r.squared
+summary(mod_ndmi_eunis_first_ch_CON)$r.squared
+```
+
+#### NDWI
+
+```{r}
+mod_ndwi_eunis_first_ch_ALP <- lm(ndwi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ALP"))
+mod_ndwi_eunis_first_ch_ATL <- lm(ndwi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "ATL"))
+mod_ndwi_eunis_first_ch_CON <- lm(ndwi_resurvey ~ eunis_first,
+                                 data = RF_data %>% 
+                                   filter(eunis_cambio == T) %>%
+                                   filter(biogeo == "CON"))
+Anova(mod_ndwi_eunis_first_ch_ALP)
+Anova(mod_ndwi_eunis_first_ch_ATL)
+Anova(mod_ndwi_eunis_first_ch_CON)
+```
+
+```{r}
+emmeans(mod_ndwi_eunis_first_ch_CON, pairwise ~ eunis_first)
+```
+
+Proportion of variance explained:
+
+```{r}
+summary(mod_ndwi_eunis_first_ch_ALP)$r.squared
+summary(mod_ndwi_eunis_first_ch_ATL)$r.squared
+summary(mod_ndwi_eunis_first_ch_CON)$r.squared
+```
 
 # Session info
 

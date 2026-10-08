@@ -1,0 +1,1364 @@
+---
+title: "MOTIVATE mapping - Analysing biodiversity - habitat exent (RF) relationships"
+author: "Alicia Valdés"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+This notebook analyses relationships between biodiversity metrics and habitat extent metrics calculated from RF.
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(here)
+library(lubridate)
+library(stringr)
+library(purrr)
+library(broom)
+library(MASS)
+library(ggplot2)
+library(corrplot)
+library(performance)
+library(robustbase)
+```
+
+# Load data on habitat extent from random forest models
+
+```{r}
+RF_data <- readRDS(here("data", "clean", "RF_data.rds"))
+```
+
+# Load data from Nat. Comms. paper
+
+From https://idata.idiv.de/ddm/Data/ShowData/3611
+
+A pan-Europe dataset of estimated linear trends in multiple dimension of local plant diversity in 57,390 vegetation-plot time series.
+
+```{r}
+biodiv_perc <- read_tsv(here("data", "all_lm_trends_percentage_change_scale.txt"))
+biodiv_perc
+```
+
+# Load data on CWMs
+
+Data on percentage annual changes in CWMs per time_seriesID                                                    :
+
+```{r}
+CWMs <- read_rds(here("data", "CWMs", "all_rate_lm_tidy_fits_CWMs_for_Alicia.rds"))
+```
+
+```{r}
+CWMs %>% distinct(metric)
+```
+
+CWM_PlantHeight.veg: CWM for plant height
+CWM_RootingDepth: CWM for rooting depth			
+CWM_LeafCN.ratio: CWM for leaf C:N ratio
+CWM_LeafArea.leaf.undef: CWM for leaf area
+CWM_SLA.undef: CWM for specific leaf area (SLA)
+
+Rename to easier names:
+
+```{r}
+CWMs <- CWMs %>%
+  mutate(metric = case_when(
+    metric == "CWM_PlantHeight.veg" ~ "CWM_PlantHeight",
+    metric == "CWM_RootingDepth" ~ "CWM_RootingDepth",
+    metric == "CWM_LeafCN.ratio" ~ "CWM_LeafCNratio",
+    metric == "CWM_LeafArea.leaf.undef" ~ "CWM_LeafArea",
+    metric == "CWM_SLA.undef" ~ "CWM_SLA",
+    TRUE ~ metric
+  ))
+```
+
+# Load original data
+
+```{r}
+data_V2025.2 <- read_tsv(
+  "C:/Data/MOTIVATE/MOTIVATE_data/Data/EVA and ReSurvey Data/2025 data - V2025.2/Core data/200_Motivate20250415_notJUICE_header_with_precise_coordinates.csv") %>%
+  mutate(date = dmy(`Date of recording`), year = as.integer(year(date)))
+```
+
+# Data wrangling
+
+## Join CMWs data to biodiversity data
+
+```{r}
+biodiv_perc <- bind_rows(biodiv_perc, 
+                         CWMs %>%
+                           dplyr::select(metric, time_seriesID, slope,
+                                         initial_div_value, EUNIS_start, 
+                                         EUNIS_end, year_start, year_end, n, 
+                                         Trajectory, plot_size))
+```
+
+## Add columns for EUNIS1 (start and end) to biodiversity data
+
+```{r}
+biodiv_perc <- biodiv_perc %>%
+  mutate(EUNIS1_start = str_sub(EUNIS_start, 1, 1),
+         EUNIS1_end = str_sub(EUNIS_end, 1, 1))
+```
+
+## Fix plotIDs in RF_data
+
+Gonzalo used RS_CODE instead of Resurvey project as first part of plot_id.
+
+Retrieve list of correspondences of RS_CODE and Resurvey project from original data:
+
+```{r}
+correspondence_list <- data_V2025.2 %>%
+  distinct(RS_CODE, `ReSurvey project`)
+```
+
+```{r}
+RF_data <- RF_data %>%
+  # Add spaces before and after "-"
+  mutate(plotID = str_replace_all(plot_id, "-", " - ")) %>%
+  # Get RS_CODE: first part of plot_id, before first "-"
+  mutate(RS_CODE = sub("-.*", "", plot_id)) %>%
+  # Join to get Resurvey project
+  left_join(correspondence_list) %>%
+  # Construct new plotID
+  mutate(plotID = str_replace(plotID, paste0("^", RS_CODE), 
+                              `ReSurvey project`)) %>%
+  # Remove unneeded columns
+  dplyr::select(-plot_id, -RS_CODE, -`ReSurvey project`) %>%
+  # Modify some plotIDs
+  mutate(
+    plotID = str_replace(
+      plotID,
+      "^AOPK_HabitatMonitoring - PolickeSteny - Signal -",
+      "AOPK_HabitatMonitoring - PolickeSteny-Signal -"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^Ecohydrology of Floodplain Meadows - ([0-9]+) - \\1\\s+-\\s+",
+      "Ecohydrology of Floodplain Meadows - \\1 - \\1-"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^PSET Puy Long - PuyLong - PSET 0 - 1",
+      "PSET Puy Long - PuyLong - PSET 0-1"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^PSET Puy Long - PuyLong - PSET ([0-9]+) - ([0-9]+)",
+      "PSET Puy Long - PuyLong - PSET \\1-\\2"
+      ),
+    plotID = str_replace(
+      plotID,
+      "^Role of AES schemes on the grasslands biodiversity - ([0-9]+) - ([0-9]+) - ([0-9]+) - \\1 - \\2 - \\3(_[0-9]+)?$",
+      "Role of AES schemes on the grasslands biodiversity - \\1-\\2-\\3 - \\1-\\2-\\3\\4"
+      )
+    )
+```
+
+## Join extent and biodiversity data
+
+```{r}
+biodiv_extent <- RF_data %>% 
+  # inner_join only joins records present in both
+  # some are present in RF_data but not in biodiv_perc 
+  # (e.g. DK presence-absence data)
+  # some are present in biodiv_perc but not in RF_data 
+  # (e.g. those not belonging to Q, R, S, T)
+  inner_join(biodiv_perc, by = c("plotID" = "time_seriesID"),
+            relationship = "many-to-many")
+```
+
+## Check plots with extent from Mahalanobis and not from RF
+
+```{r}
+plotIDs_extent_Maha <- readRDS(here("data", "clean", "biodiv_extent.rds")) %>% 
+  distinct(plotID)
+plotIDs_extent_RF <- bind_rows(biodiv_extent %>% distinct(plotID))
+# Plots with extent from Mahalanobis and not from RF
+plotIDs_extent_Maha %>%
+  anti_join(
+    plotIDs_extent_RF,
+    by = "plotID"
+  )
+```
+
+Only one, fine!
+
+## Check if years match
+
+```{r}
+# Number of plots
+biodiv_extent %>% distinct(plotID) %>% nrow()
+# Number of plots where first and last year match --> USE THIS SO FAR!
+biodiv_extent %>% filter(first_year.x == year_start & last_year == year_end) %>% 
+  distinct(plotID) %>% nrow()
+# Number of plots where first year does not match, but last year matches
+biodiv_extent %>% filter(first_year.x != year_start & last_year == year_end) %>% 
+  distinct(plotID) %>% nrow()
+# Number of plots where first year matches, but last year does not
+biodiv_extent %>% filter(first_year.x == year_start & last_year != year_end) %>% 
+  distinct(plotID) %>% nrow()
+# Number of plots where neither first nor last year match
+biodiv_extent %>% filter(first_year.x != year_start & last_year != year_end) %>% 
+  distinct(plotID) %>% nrow()
+```
+
+In some cases, they do not match because the first or last observation in some time series did not have data on functional and/or phylogenetic diversity metrics (cf. Stephan's email). So far, we use only time series where first and last year match.
+
+```{r}
+biodiv_extent <- biodiv_extent %>%
+  filter(first_year.x == year_start & last_year == year_end)
+```
+
+# Numbers of plots
+
+```{r}
+# Total
+biodiv_extent %>% distinct(plotID) %>% nrow()
+# With constant habitat
+biodiv_extent %>% filter(eunis_cambio == F) %>% distinct(plotID) %>% nrow()
+# with habitat change
+biodiv_extent %>% filter(eunis_cambio == T) %>% distinct(plotID) %>% nrow()
+```
+
+# TBD: Map of plots in bioregions
+
+# Count of plots in bioregions
+
+```{r}
+biodiv_extent %>% dplyr::select(plotID, biogeo) %>% 
+  distinct() %>% count(biogeo) %>% arrange(n)
+```
+
+# Distributions
+
+## Initial biodiversity values
+
+### Plots with constant habitat
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  filter(eunis_cambio == F) %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(initial_div_value, 0.01, na.rm = TRUE),
+    q99 = quantile(initial_div_value, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(initial_div_value >= q01, initial_div_value <= q99) %>%
+  ggplot(aes(initial_div_value)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Initial diversity value")
+```
+
+### Plots with habitat change
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  filter(eunis_cambio == T) %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(initial_div_value, 0.01, na.rm = TRUE),
+    q99 = quantile(initial_div_value, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(initial_div_value >= q01, initial_div_value <= q99) %>%
+  ggplot(aes(initial_div_value)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Initial diversity value")
+```
+
+## Biodiversity change
+
+### Plots with constant habitat
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  filter(eunis_cambio == F) %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+```
+
+### Plots with habitat change
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  filter(eunis_cambio == F) %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+```
+
+## Habitat extent change
+
+```{r}
+# Histograms
+biodiv_extent %>%
+  distinct(plotID, eunis_cambio, delta_focal_ha, delta_focal_pct) %>%
+  pivot_longer(cols = c(delta_focal_ha:delta_focal_pct), names_to = "metric",
+               values_to = "value") %>%
+  ggplot(aes(value)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~ metric + eunis_cambio, scales = "free") +
+  theme_bw() + xlab("Change in extent")
+```
+
+# Correlations
+
+## Correlations among initial biodiversity values
+
+```{r}
+biodiv_wide <- biodiv_extent %>%
+  distinct(plotID, metric, initial_div_value) %>%
+  pivot_wider(names_from = metric, values_from = initial_div_value)
+```
+
+```{r}
+cor_mat_init <- biodiv_wide %>%
+  dplyr::select(-plotID) %>%
+  cor(use = "pairwise.complete.obs")
+corrplot(cor_mat_init, method = "color", type = "upper", addCoef.col = "black",
+         number.cex = 0.6, tl.col = "black", order = "hclust")
+```
+
+## Correlations among biodiversity change metrics
+
+```{r}
+biodiv_change_wide <- biodiv_extent %>%
+  distinct(plotID, metric, slope) %>%
+  pivot_wider(names_from = metric, values_from = slope)
+```
+
+```{r}
+cor_mat_change <- biodiv_change_wide %>%
+  dplyr::select(-plotID) %>%
+  cor(use = "pairwise.complete.obs")
+corrplot(cor_mat_change, method = "color", type = "upper", addCoef.col = "black",
+         number.cex = 0.6, tl.col = "black", order = "hclust")
+```
+
+# Models change in EXTENT
+
+## Effect of change in extent on change in diversity
+
+```{r}
+models_change <- biodiv_extent %>%
+  group_by(metric) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "delta_focal_pct")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, model, estimate, p.value, r2, n)
+```
+
+Check performance of models:
+
+```{r}
+models_change %>%
+  pull(model) %>%
+  walk(~ print(check_model(.x)))
+```
+
+```{r}
+models_change %>% filter(p.value < 0.05) %>% arrange(metric)
+```
+
+```{r}
+models_change %>% filter(p.value < 0.05) %>% arrange(metric) %>%
+  pull(model) %>%
+  walk(~ print(check_model(.x)))
+```
+
+
+```{r}
+plot_data_change <- biodiv_extent %>%
+  semi_join(
+    models_change %>%
+      filter(p.value < 0.05) %>%
+      dplyr::select(metric),
+    by = c("metric")
+  ) %>%
+  left_join(
+    models_change %>%
+      dplyr::select(metric, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric")
+  )
+```
+
+```{r}
+make_plot_change <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name), 
+         x = "Change in habitat extent (%)",
+         y = paste0("Change in ", biodiv_name), colour = NULL) +
+    theme_bw()
+}
+```
+
+```{r message=FALSE}
+plot_data_change %>%
+  group_by(metric) %>%
+  group_split() %>%
+  map(make_plot_change)
+```
+
+## Effect of change in extent for each habitat type
+
+```{r}
+models_change_hab <- biodiv_extent %>%
+  group_by(metric, eunis1) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "delta_focal_pct")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, eunis1, model, estimate, p.value, r2, n)
+```
+
+### TBD? Check performance of models
+
+```{r}
+models_change_hab %>% filter(p.value < 0.05) %>% arrange(metric, eunis1)
+```
+
+```{r}
+plot_data_change_hab <- biodiv_extent %>%
+  semi_join(
+    models_change_hab %>%
+      dplyr::filter(p.value < 0.05),
+    by = c("metric", "eunis1")
+  ) %>%
+  left_join(
+    models_change_hab %>%
+      dplyr::select(metric, eunis1, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "eunis1")
+  )
+```
+
+```{r}
+make_plot_change_hab <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  EUNIS <- unique(df$eunis1)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | EUNIS = ", EUNIS),
+         x = "Change in habitat extent (%)",
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
+```{r message=FALSE}
+plot_data_change_hab %>%
+  group_by(metric, eunis1) %>%
+  group_split() %>%
+  map(make_plot_change_hab)
+```
+
+## Effect of change in extent for each trajectory type
+
+```{r}
+models_change_traj <- biodiv_extent %>%
+  group_by(metric, Trajectory) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "delta_focal_pct")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, Trajectory, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_traj %>% filter(p.value < 0.05) %>% arrange(metric, Trajectory)
+```
+
+```{r}
+plot_data_change_traj <- biodiv_extent %>%
+  semi_join(
+    models_change_traj %>%
+      dplyr::filter(p.value < 0.05),
+    by = c("metric", "Trajectory")
+  ) %>%
+  left_join(
+    models_change_traj %>%
+      dplyr::select(metric, Trajectory, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "Trajectory")
+  )
+```
+
+```{r}
+make_plot_change_traj <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  traj <- unique(df$Trajectory)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | Trajectory = ", traj),
+         x = "Change in habitat extent (%)", 
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
+```{r message=FALSE}
+plot_data_change_traj %>%
+  group_by(metric, Trajectory) %>%
+  group_split() %>%
+  map(make_plot_change_traj)
+```
+
+# Models change in FUNCTIONAL METRICS
+
+## Effect of change in functional metrics on change in diversity
+
+```{r}
+models_change_funct <- biodiv_extent %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "rs_slope")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, rs_index, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_funct %>% filter(p.value < 0.05) %>% arrange(metric, rs_index)
+```
+
+```{r}
+plot_data_change_funct <- biodiv_extent %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  semi_join(models_change_funct %>% filter(p.value < 0.05),
+            by = c("metric", "rs_index")) %>%
+  left_join(models_change_funct %>%
+              dplyr::select(metric, rs_index, estimate, p.value, r2, n) %>%
+              rename(n_obs = n),
+            by = c("metric", "rs_index")
+            )
+```
+
+```{r}
+make_plot_change_funct <- function(df){
+  
+  biodiv_name <- unique(df$metric)
+  rs_index <- unique(df$rs_index)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+  
+  ggplot(df, aes(x = rs_slope, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.3, vjust = 1.1,size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | ", rs_index),
+         x = paste0(rs_index, " Sen's slope"),
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+  }
+```
+
+```{r message=FALSE, warning=FALSE}
+plot_data_change_funct %>%
+  group_by(metric, rs_index) %>%
+  group_split() %>%
+  map(make_plot_change_funct)
+```
+
+## Effect of change in functional metrics for each habitat type
+
+```{r}
+models_change_funct_hab <- biodiv_extent %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index, eunis1) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "rs_slope")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, rs_index, eunis1, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_funct_hab %>% filter(p.value < 0.05 & r2 > 0.1) %>% 
+  arrange(metric, rs_index, eunis1)
+```
+
+```{r}
+plot_data_change_funct_hab <- biodiv_extent %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  semi_join(
+    models_change_funct_hab %>% dplyr::filter(p.value < 0.05 & r2 > 0.1),
+    by = c("metric", "rs_index", "eunis1")
+  ) %>%
+  left_join(
+    models_change_funct_hab %>%
+      dplyr::select(metric, rs_index, eunis1, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "rs_index", "eunis1")
+  )
+```
+
+```{r}
+make_plot_change_funct_hab <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  rs_index <- unique(df$rs_index)
+  EUNIS <- unique(df$eunis1)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = rs_slope, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | EUNIS = ", EUNIS),
+         x = paste0(rs_index, " Sen's slope"),
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
+```{r message=FALSE}
+plot_data_change_funct_hab %>%
+  group_by(metric, rs_index, eunis1) %>%
+  group_split() %>%
+  map(make_plot_change_funct_hab)
+```
+
+## Effect of change in functional metrics for each trajectory type
+
+```{r}
+models_change_funct_traj <- biodiv_extent %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index, Trajectory) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "rs_slope")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, rs_index, Trajectory, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_funct_traj %>% filter(p.value < 0.05 & r2 > 0.2) %>% 
+  arrange(metric, rs_index, Trajectory)
+```
+
+```{r}
+plot_data_change_funct_traj <- biodiv_extent %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  semi_join(
+    models_change_funct_traj %>% dplyr::filter(p.value < 0.05 & r2 > 0.2),
+    by = c("metric", "rs_index", "Trajectory")
+  ) %>%
+  left_join(
+    models_change_funct_traj %>%
+      dplyr::select(metric, rs_index, Trajectory, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "rs_index", "Trajectory")
+  )
+```
+
+```{r}
+make_plot_change_funct_traj <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  rs_index <- unique(df$rs_index)
+  Trajectory <- unique(df$Trajectory)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = rs_slope, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | Trajectory = ", Trajectory),
+         x = paste0(rs_index, " Sen's slope"),
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
+```{r message=FALSE}
+plot_data_change_funct_traj %>%
+  group_by(metric, rs_index, Trajectory) %>%
+  group_split() %>%
+  map(make_plot_change_funct_traj)
+```
+
+# TBD: Try other model types instead of lm() for some variables
+
+# Models change in EXTENT without OUTLIERS
+
+Removing upper and lower 1% quantiles of biodiversity change values (slopes) and re-running the models.
+
+## Effect of change in extent on change in diversity
+
+```{r}
+models_change_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "delta_focal_pct")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_noout %>% filter(p.value < 0.05) %>% arrange(metric)
+```
+
+```{r}
+plot_data_change_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  semi_join(
+    models_change_noout %>%
+      filter(p.value < 0.05) %>%
+      dplyr::select(metric),
+    by = c("metric")
+  ) %>%
+  left_join(
+    models_change_noout %>%
+      dplyr::select(metric, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric")
+  )
+```
+
+```{r message=FALSE}
+plot_data_change_noout %>%
+  group_by(metric) %>%
+  group_split() %>%
+  map(make_plot_change)
+```
+
+## Effect of change in extent for each habitat type
+
+```{r}
+models_change_hab_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  group_by(metric, eunis1) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "delta_focal_pct")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, eunis1, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_hab_noout %>% filter(p.value < 0.05) %>% arrange(metric, eunis1)
+```
+
+```{r}
+plot_data_change_hab_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  semi_join(
+    models_change_hab_noout %>%
+      dplyr::filter(p.value < 0.05),
+    by = c("metric", "eunis1")
+  ) %>%
+  left_join(
+    models_change_hab_noout %>%
+      dplyr::select(metric, eunis1, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "eunis1")
+  )
+```
+
+```{r message=FALSE}
+plot_data_change_hab_noout %>%
+  group_by(metric, eunis1) %>%
+  group_split() %>%
+  map(make_plot_change_hab)
+```
+
+## Effect of change in extent for each trajectory type
+
+```{r}
+models_change_traj_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  group_by(metric, Trajectory) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "delta_focal_pct")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, Trajectory, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_traj_noout %>% filter(p.value < 0.05) %>% arrange(metric, Trajectory)
+```
+
+```{r}
+plot_data_change_traj_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  semi_join(
+    models_change_traj_noout %>%
+      dplyr::filter(p.value < 0.05),
+    by = c("metric", "Trajectory")
+  ) %>%
+  left_join(
+    models_change_traj_noout %>%
+      dplyr::select(metric, Trajectory, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "Trajectory")
+  )
+```
+
+```{r message=FALSE}
+plot_data_change_traj_noout %>%
+  group_by(metric, Trajectory) %>%
+  group_split() %>%
+  map(make_plot_change_traj)
+```
+
+# Models change in FUNCTIONAL METRICS WITHOUT OUTLIERS
+
+## Effect of change in functional metrics on change in diversity
+
+```{r}
+models_change_funct_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "rs_slope")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, rs_index, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_funct_noout %>% filter(p.value < 0.05) %>% arrange(metric, rs_index)
+```
+
+```{r}
+plot_data_change_funct_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  semi_join(models_change_funct_noout %>% filter(p.value < 0.05),
+            by = c("metric", "rs_index")) %>%
+  left_join(models_change_funct_noout %>%
+              dplyr::select(metric, rs_index, estimate, p.value, r2, n) %>%
+              rename(n_obs = n),
+            by = c("metric", "rs_index")
+            )
+```
+
+```{r message=FALSE, warning=FALSE}
+plot_data_change_funct_noout %>%
+  group_by(metric, rs_index) %>%
+  group_split() %>%
+  map(make_plot_change_funct)
+```
+
+## Effect of change in functional metrics for each habitat type
+
+```{r}
+models_change_funct_hab_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index, eunis1) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "rs_slope")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, rs_index, eunis1, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_funct_hab_noout %>% filter(p.value < 0.05 & r2 > 0.05) %>% 
+  arrange(metric, rs_index, eunis1)
+```
+
+```{r}
+plot_data_change_funct_hab_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  semi_join(
+    models_change_funct_hab_noout %>% dplyr::filter(p.value < 0.05 & r2 > 0.05),
+    by = c("metric", "rs_index", "eunis1")
+  ) %>%
+  left_join(
+    models_change_funct_hab_noout %>%
+      dplyr::select(metric, rs_index, eunis1, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "rs_index", "eunis1")
+  )
+```
+
+```{r message=FALSE}
+plot_data_change_funct_hab_noout %>%
+  group_by(metric, rs_index, eunis1) %>%
+  group_split() %>%
+  map(make_plot_change_funct_hab)
+```
+
+## Effect of change in functional metrics for each trajectory type
+
+```{r}
+models_change_funct_traj_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index, Trajectory) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
+    coef = map(model, ~ tidy(.x) %>%
+                 filter(term == "rs_slope")),
+    fit = map(model, glance),
+    estimate = map_dbl(coef, "estimate"),
+    p.value  = map_dbl(coef, "p.value"),
+    r2       = map_dbl(fit, "r.squared"),
+    n        = map_int(data, nrow)
+  ) %>%
+  dplyr::select(metric, rs_index, Trajectory, model, estimate, p.value, r2, n)
+```
+
+```{r}
+models_change_funct_traj_noout %>% filter(p.value < 0.05 & r2 > 0.05) %>% 
+  arrange(metric, rs_index, Trajectory)
+```
+
+```{r}
+plot_data_change_funct_traj_noout <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  semi_join(
+    models_change_funct_traj_noout %>% dplyr::filter(p.value < 0.05 & r2 > 0.05),
+    by = c("metric", "rs_index", "Trajectory")
+  ) %>%
+  left_join(
+    models_change_funct_traj_noout %>%
+      dplyr::select(metric, rs_index, Trajectory, estimate, p.value, r2, n) %>%
+      rename(n_obs = n),
+    by = c("metric", "rs_index", "Trajectory")
+  )
+```
+
+```{r message=FALSE}
+plot_data_change_funct_traj_noout %>%
+  group_by(metric, rs_index, Trajectory) %>%
+  group_split() %>%
+  map(make_plot_change_funct_traj)
+```
+
+
+
+# RDA slopes CWMs ~ slopes functional metrics
+
+## All
+
+```{r}
+cwm_wide <- biodiv_extent %>%
+  filter(str_starts(metric, "CWM_")) %>%
+  dplyr::select(plotID, ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                savi_resurvey, metric, slope) %>% 
+  distinct() %>%
+  pivot_wider(names_from = metric, values_from = slope) %>%
+  # Remove NAs
+  drop_na()
+```
+
+Response matrix:
+
+```{r}
+Y <- cwm_wide %>%
+  dplyr::select(CWM_PlantHeight, CWM_RootingDepth, CWM_LeafCNratio, 
+                CWM_LeafArea, CWM_SLA) %>%
+  scale()
+```
+
+Explanatory variables:
+
+```{r}
+X <- cwm_wide %>%
+  dplyr::select(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, savi_resurvey)
+```
+
+RDA:
+
+```{r}
+library(vegan)
+
+mod_rda <- rda(Y ~ ndvi_resurvey + ndmi_resurvey + ndwi_resurvey + 
+                 savi_resurvey, data = X)
+```
+
+```{r}
+anova(mod_rda)
+anova(mod_rda, by = "axis")
+anova(mod_rda, by = "term")
+```
+
+```{r}
+RsquareAdj(mod_rda)
+```
+
+```{r}
+library(ggvegan)
+
+autoplot(mod_rda, layers = c("species", "biplot"))
+```
+
+## By habitat
+
+```{r}
+library(tidyverse)
+library(vegan)
+
+rda_habitat <- biodiv_extent %>%
+  filter(str_starts(metric, "CWM_")) %>%
+  dplyr::select(
+    plotID, eunis1,
+    ndvi_resurvey, ndmi_resurvey,
+    ndwi_resurvey, savi_resurvey,
+    metric, slope
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = slope
+  ) %>%
+  drop_na() %>%
+  group_by(eunis1) %>%
+  nest() %>%
+  mutate(
+    rda = map(
+      data,
+      ~{
+        Y <- .x %>%
+          dplyr::select(
+            CWM_PlantHeight,
+            CWM_RootingDepth,
+            CWM_LeafCNratio,
+            CWM_LeafArea,
+            CWM_SLA
+          ) %>%
+          scale()
+
+        X <- .x %>%
+          dplyr::select(
+            ndvi_resurvey,
+            ndmi_resurvey,
+            ndwi_resurvey,
+            savi_resurvey
+          )
+
+        rda(Y ~ ., data = X)
+      }
+    )
+  )
+```
+
+```{r}
+anova(rda_habitat$rda[[1]])
+anova(rda_habitat$rda[[2]])
+anova(rda_habitat$rda[[3]])
+anova(rda_habitat$rda[[4]])
+anova(rda_habitat$rda[[5]])
+
+anova(rda_habitat$rda[[1]], by = "axis")
+anova(rda_habitat$rda[[2]], by = "axis")
+anova(rda_habitat$rda[[3]], by = "axis")
+anova(rda_habitat$rda[[4]], by = "axis")
+anova(rda_habitat$rda[[5]], by = "axis")
+
+anova(rda_habitat$rda[[1]], by = "term")
+anova(rda_habitat$rda[[2]], by = "term")
+anova(rda_habitat$rda[[3]], by = "term")
+anova(rda_habitat$rda[[4]], by = "term")
+anova(rda_habitat$rda[[5]], by = "term")
+```
+
+```{r}
+RsquareAdj(rda_habitat$rda[[1]])
+RsquareAdj(rda_habitat$rda[[2]])
+RsquareAdj(rda_habitat$rda[[3]])
+RsquareAdj(rda_habitat$rda[[4]])
+RsquareAdj(rda_habitat$rda[[5]])
+```
+
+```{r}
+autoplot(rda_habitat$rda[[1]], layers = c("species", "biplot"))
+autoplot(rda_habitat$rda[[2]], layers = c("species", "biplot"))
+autoplot(rda_habitat$rda[[3]], layers = c("species", "biplot"))
+autoplot(rda_habitat$rda[[4]], layers = c("species", "biplot"))
+autoplot(rda_habitat$rda[[5]], layers = c("species", "biplot"))
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+
