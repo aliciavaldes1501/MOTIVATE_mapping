@@ -261,6 +261,86 @@ Proportion of variance explained:
 summary(mod_extent_eunis1_noch)$r.squared
 ```
 
+#### Robustness analysis
+
+See if the same pattern emerges when considering 3 blocks of data:
+DK - Bavaria - Rest
+
+```{r}
+RF_data %>% 
+  mutate(resurvey_proj = sub(" - .*", "", plot_id_spaced)) %>%
+  count(resurvey_proj) %>%
+  arrange(desc(n))
+```
+
+Define three data blocks:
+
+```{r}
+RF_data <- RF_data %>%
+  mutate(data_block = case_when(
+    str_detect(plot_id_spaced, "NATURDATA.DK") ~ "DK",
+    str_detect(plot_id_spaced, "gruenland_bayern") ~ "Bavaria",
+    TRUE ~ "Rest"
+  ))
+```
+
+```{r}
+RF_data %>% count(data_block)
+```
+
+All in Bavaria are R:
+
+```{r}
+RF_data %>% filter(data_block == "Bavaria") %>% count(eunis1)
+```
+
+
+Repeat the models for each of the other 2 data blocks:
+
+```{r}
+mod_extent_eunis1_noch_DK <- lm(delta_focal_pct ~ eunis1, 
+                             data = RF_data %>% 
+                               filter(eunis_cambio == F & data_block == "DK"))
+mod_extent_eunis1_noch_Rest <- lm(delta_focal_pct ~ eunis1, 
+                             data = RF_data %>% 
+                               filter(eunis_cambio == F & data_block == "Rest"))
+Anova(mod_extent_eunis1_noch_DK)
+Anova(mod_extent_eunis1_noch_Rest)
+```
+
+```{r}
+emmeans(mod_extent_eunis1_noch_DK, pairwise ~ eunis1)
+emmeans(mod_extent_eunis1_noch_Rest, pairwise ~ eunis1)
+```
+
+```{r}
+ggplot(RF_data %>% filter(eunis_cambio == F & data_block == "DK"), 
+                aes(x = eunis1, y = delta_focal_pct, fill = eunis1)) +
+  geom_point(aes(color = eunis1),
+             position = position_jitter(width = 0.25), size = 0.75, alpha = 0.2) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+                linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "EUNIS I Habitat type", y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none") 
+ggplot(RF_data %>% filter(eunis_cambio == F & data_block == "Rest"), 
+                aes(x = eunis1, y = delta_focal_pct, fill = eunis1)) +
+  geom_point(aes(color = eunis1),
+             position = position_jitter(width = 0.25), size = 0.75, alpha = 0.2) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+                linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "EUNIS I Habitat type", y = "Change in habitat extent (%)") +
+  theme_bw() +
+  theme(legend.position = "none") 
+```
+
+
 ### Change in extent by number of years between first and last survey
 
 ```{r}
@@ -643,6 +723,83 @@ summary(mod_ndvi_eunis1_noch)$r.squared
 summary(mod_savi_eunis1_noch)$r.squared
 summary(mod_ndmi_eunis1_noch)$r.squared
 summary(mod_ndwi_eunis1_noch)$r.squared
+```
+
+#### Robustness analysis
+
+See if the same pattern emerges when considering the 2 blocks of data: DK vs Rest
+
+```{r}
+mod_ndvi_eunis1_noch_DK <- lm(ndvi_resurvey ~ eunis1, 
+                           data = RF_data %>%
+                             filter(eunis_cambio == F & data_block == "DK"))
+mod_savi_eunis1_noch_DK <- lm(savi_resurvey ~ eunis1, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & data_block == "DK"))
+mod_ndmi_eunis1_noch_DK <- lm(ndmi_resurvey ~ eunis1, 
+                           data = RF_data %>%
+                             filter(eunis_cambio == F & data_block == "DK"))
+mod_ndwi_eunis1_noch_DK <- lm(ndwi_resurvey ~ eunis1, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & data_block == "DK"))
+mod_ndvi_eunis1_noch_Rest <- lm(ndvi_resurvey ~ eunis1, 
+                           data = RF_data %>%
+                             filter(eunis_cambio == F & data_block == "Rest"))
+mod_savi_eunis1_noch_Rest <- lm(savi_resurvey ~ eunis1, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & data_block == "Rest"))
+mod_ndmi_eunis1_noch_Rest <- lm(ndmi_resurvey ~ eunis1, 
+                           data = RF_data %>%
+                             filter(eunis_cambio == F & data_block == "Rest"))
+mod_ndwi_eunis1_noch_Rest <- lm(ndwi_resurvey ~ eunis1, 
+                           data = RF_data %>% 
+                             filter(eunis_cambio == F & data_block == "Rest"))
+Anova(mod_ndvi_eunis1_noch_DK)
+Anova(mod_savi_eunis1_noch_DK)
+Anova(mod_ndmi_eunis1_noch_DK)
+Anova(mod_ndwi_eunis1_noch_DK)
+Anova(mod_ndvi_eunis1_noch_Rest)
+Anova(mod_savi_eunis1_noch_Rest)
+Anova(mod_ndmi_eunis1_noch_Rest)
+Anova(mod_ndwi_eunis1_noch_Rest)
+```
+
+```{r}
+emmeans(mod_ndvi_eunis1_noch_DK, pairwise ~ eunis1)
+emmeans(mod_savi_eunis1_noch_DK, pairwise ~ eunis1)
+emmeans(mod_ndmi_eunis1_noch_DK, pairwise ~ eunis1)
+emmeans(mod_ndwi_eunis1_noch_DK, pairwise ~ eunis1)
+emmeans(mod_ndvi_eunis1_noch_Rest, pairwise ~ eunis1)
+emmeans(mod_savi_eunis1_noch_Rest, pairwise ~ eunis1)
+emmeans(mod_ndmi_eunis1_noch_Rest, pairwise ~ eunis1)
+emmeans(mod_ndwi_eunis1_noch_Rest, pairwise ~ eunis1)
+```
+
+```{r}
+ggplot(RF_data %>% filter(eunis_cambio == F) %>%
+                  pivot_longer(cols = c(ndvi_resurvey, savi_resurvey,
+                                        ndmi_resurvey, ndwi_resurvey), 
+                               names_to = "index", values_to = "value") %>%
+                  mutate(index = factor(index, 
+                                        levels = c("ndvi_resurvey", 
+                                                   "savi_resurvey",
+                                                   "ndmi_resurvey", 
+                                                   "ndwi_resurvey"),
+                                        labels = c("NDVI", "SAVI", "NDMI", 
+                                                   "NDWI"))) %>%
+         filter(data_block != "Bavaria"), 
+                aes(x = eunis1, y = value, fill = eunis1)) +
+  geom_point(aes(color = eunis1),
+             position = position_jitter(width = 0.25), size = 0.5, alpha = 0.1) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.2,
+                linewidth = 0.3, color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 2,
+                color = "black", fill = "black") +
+  facet_grid(rows = vars(index), cols = vars(data_block), scales = "free") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(x = "EUNIS I Habitat type", y = "Sen's slope") +
+  theme_bw() +
+  theme(legend.position = "none")
 ```
 
 ### Figure 2

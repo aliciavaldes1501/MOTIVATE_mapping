@@ -35,6 +35,9 @@ library(ggplot2)
 library(corrplot)
 library(performance)
 library(robustbase)
+library(quantreg)
+library(ggside)
+library(patchwork)
 ```
 
 # Load data on habitat extent from random forest models
@@ -126,49 +129,6 @@ correspondence_list <- data_V2025.2 %>%
   distinct(RS_CODE, `ReSurvey project`)
 ```
 
-```{r}
-RF_data <- RF_data %>%
-  # Add spaces before and after "-"
-  mutate(plotID = str_replace_all(plot_id, "-", " - ")) %>%
-  # Get RS_CODE: first part of plot_id, before first "-"
-  mutate(RS_CODE = sub("-.*", "", plot_id)) %>%
-  # Join to get Resurvey project
-  left_join(correspondence_list) %>%
-  # Construct new plotID
-  mutate(plotID = str_replace(plotID, paste0("^", RS_CODE), 
-                              `ReSurvey project`)) %>%
-  # Remove unneeded columns
-  dplyr::select(-plot_id, -RS_CODE, -`ReSurvey project`) %>%
-  # Modify some plotIDs
-  mutate(
-    plotID = str_replace(
-      plotID,
-      "^AOPK_HabitatMonitoring - PolickeSteny - Signal -",
-      "AOPK_HabitatMonitoring - PolickeSteny-Signal -"
-      ),
-    plotID = str_replace(
-      plotID,
-      "^Ecohydrology of Floodplain Meadows - ([0-9]+) - \\1\\s+-\\s+",
-      "Ecohydrology of Floodplain Meadows - \\1 - \\1-"
-      ),
-    plotID = str_replace(
-      plotID,
-      "^PSET Puy Long - PuyLong - PSET 0 - 1",
-      "PSET Puy Long - PuyLong - PSET 0-1"
-      ),
-    plotID = str_replace(
-      plotID,
-      "^PSET Puy Long - PuyLong - PSET ([0-9]+) - ([0-9]+)",
-      "PSET Puy Long - PuyLong - PSET \\1-\\2"
-      ),
-    plotID = str_replace(
-      plotID,
-      "^Role of AES schemes on the grasslands biodiversity - ([0-9]+) - ([0-9]+) - ([0-9]+) - \\1 - \\2 - \\3(_[0-9]+)?$",
-      "Role of AES schemes on the grasslands biodiversity - \\1-\\2-\\3 - \\1-\\2-\\3\\4"
-      )
-    )
-```
-
 ## Join extent and biodiversity data
 
 ```{r}
@@ -178,7 +138,7 @@ biodiv_extent <- RF_data %>%
   # (e.g. DK presence-absence data)
   # some are present in biodiv_perc but not in RF_data 
   # (e.g. those not belonging to Q, R, S, T)
-  inner_join(biodiv_perc, by = c("plotID" = "time_seriesID"),
+  inner_join(biodiv_perc, by = c("plot_id_spaced" = "time_seriesID"),
             relationship = "many-to-many")
 ```
 
@@ -187,12 +147,12 @@ biodiv_extent <- RF_data %>%
 ```{r}
 plotIDs_extent_Maha <- readRDS(here("data", "clean", "biodiv_extent.rds")) %>% 
   distinct(plotID)
-plotIDs_extent_RF <- bind_rows(biodiv_extent %>% distinct(plotID))
+plotIDs_extent_RF <- bind_rows(biodiv_extent %>% distinct(plot_id_spaced))
 # Plots with extent from Mahalanobis and not from RF
 plotIDs_extent_Maha %>%
   anti_join(
     plotIDs_extent_RF,
-    by = "plotID"
+    by = c("plotID" = "plot_id_spaced")
   )
 ```
 
@@ -202,19 +162,19 @@ Only one, fine!
 
 ```{r}
 # Number of plots
-biodiv_extent %>% distinct(plotID) %>% nrow()
+biodiv_extent %>% distinct(plot_id) %>% nrow()
 # Number of plots where first and last year match --> USE THIS SO FAR!
 biodiv_extent %>% filter(first_year.x == year_start & last_year == year_end) %>% 
-  distinct(plotID) %>% nrow()
+  distinct(plot_id) %>% nrow()
 # Number of plots where first year does not match, but last year matches
 biodiv_extent %>% filter(first_year.x != year_start & last_year == year_end) %>% 
-  distinct(plotID) %>% nrow()
+  distinct(plot_id) %>% nrow()
 # Number of plots where first year matches, but last year does not
 biodiv_extent %>% filter(first_year.x == year_start & last_year != year_end) %>% 
-  distinct(plotID) %>% nrow()
+  distinct(plot_id) %>% nrow()
 # Number of plots where neither first nor last year match
 biodiv_extent %>% filter(first_year.x != year_start & last_year != year_end) %>% 
-  distinct(plotID) %>% nrow()
+  distinct(plot_id) %>% nrow()
 ```
 
 In some cases, they do not match because the first or last observation in some time series did not have data on functional and/or phylogenetic diversity metrics (cf. Stephan's email). So far, we use only time series where first and last year match.
@@ -228,11 +188,11 @@ biodiv_extent <- biodiv_extent %>%
 
 ```{r}
 # Total
-biodiv_extent %>% distinct(plotID) %>% nrow()
+biodiv_extent %>% distinct(plot_id) %>% nrow()
 # With constant habitat
-biodiv_extent %>% filter(eunis_cambio == F) %>% distinct(plotID) %>% nrow()
+biodiv_extent %>% filter(eunis_cambio == F) %>% distinct(plot_id) %>% nrow()
 # with habitat change
-biodiv_extent %>% filter(eunis_cambio == T) %>% distinct(plotID) %>% nrow()
+biodiv_extent %>% filter(eunis_cambio == T) %>% distinct(plot_id) %>% nrow()
 ```
 
 # TBD: Map of plots in bioregions
@@ -240,7 +200,7 @@ biodiv_extent %>% filter(eunis_cambio == T) %>% distinct(plotID) %>% nrow()
 # Count of plots in bioregions
 
 ```{r}
-biodiv_extent %>% dplyr::select(plotID, biogeo) %>% 
+biodiv_extent %>% dplyr::select(plot_id, biogeo) %>% 
   distinct() %>% count(biogeo) %>% arrange(n)
 ```
 
@@ -327,7 +287,7 @@ biodiv_extent %>%
 ```{r}
 # Histograms
 biodiv_extent %>%
-  distinct(plotID, eunis_cambio, delta_focal_ha, delta_focal_pct) %>%
+  distinct(plot_id, eunis_cambio, delta_focal_ha, delta_focal_pct) %>%
   pivot_longer(cols = c(delta_focal_ha:delta_focal_pct), names_to = "metric",
                values_to = "value") %>%
   ggplot(aes(value)) +
@@ -342,13 +302,13 @@ biodiv_extent %>%
 
 ```{r}
 biodiv_wide <- biodiv_extent %>%
-  distinct(plotID, metric, initial_div_value) %>%
+  distinct(plot_id, metric, initial_div_value) %>%
   pivot_wider(names_from = metric, values_from = initial_div_value)
 ```
 
 ```{r}
 cor_mat_init <- biodiv_wide %>%
-  dplyr::select(-plotID) %>%
+  dplyr::select(-plot_id) %>%
   cor(use = "pairwise.complete.obs")
 corrplot(cor_mat_init, method = "color", type = "upper", addCoef.col = "black",
          number.cex = 0.6, tl.col = "black", order = "hclust")
@@ -358,467 +318,16 @@ corrplot(cor_mat_init, method = "color", type = "upper", addCoef.col = "black",
 
 ```{r}
 biodiv_change_wide <- biodiv_extent %>%
-  distinct(plotID, metric, slope) %>%
+  distinct(plot_id, metric, slope) %>%
   pivot_wider(names_from = metric, values_from = slope)
 ```
 
 ```{r}
 cor_mat_change <- biodiv_change_wide %>%
-  dplyr::select(-plotID) %>%
+  dplyr::select(-plot_id) %>%
   cor(use = "pairwise.complete.obs")
 corrplot(cor_mat_change, method = "color", type = "upper", addCoef.col = "black",
          number.cex = 0.6, tl.col = "black", order = "hclust")
-```
-
-# Models change in EXTENT
-
-## Effect of change in extent on change in diversity
-
-```{r}
-models_change <- biodiv_extent %>%
-  group_by(metric) %>%
-  nest() %>%
-  mutate(
-    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
-    coef = map(model, ~ tidy(.x) %>%
-                 filter(term == "delta_focal_pct")),
-    fit = map(model, glance),
-    estimate = map_dbl(coef, "estimate"),
-    p.value  = map_dbl(coef, "p.value"),
-    r2       = map_dbl(fit, "r.squared"),
-    n        = map_int(data, nrow)
-  ) %>%
-  dplyr::select(metric, model, estimate, p.value, r2, n)
-```
-
-Check performance of models:
-
-```{r}
-models_change %>%
-  pull(model) %>%
-  walk(~ print(check_model(.x)))
-```
-
-```{r}
-models_change %>% filter(p.value < 0.05) %>% arrange(metric)
-```
-
-```{r}
-models_change %>% filter(p.value < 0.05) %>% arrange(metric) %>%
-  pull(model) %>%
-  walk(~ print(check_model(.x)))
-```
-
-
-```{r}
-plot_data_change <- biodiv_extent %>%
-  semi_join(
-    models_change %>%
-      filter(p.value < 0.05) %>%
-      dplyr::select(metric),
-    by = c("metric")
-  ) %>%
-  left_join(
-    models_change %>%
-      dplyr::select(metric, estimate, p.value, r2, n) %>%
-      rename(n_obs = n),
-    by = c("metric")
-  )
-```
-
-```{r}
-make_plot_change <- function(df){
-
-  biodiv_name <- unique(df$metric)
-  estimate <- unique(df$estimate)
-  pval <- unique(df$p.value)
-  r2 <- unique(df$r2)
-  n_obs <- unique(df$n_obs)
-
-  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
-    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
-    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
-             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
-                             estimate, r2, pval, n_obs)) +
-    labs(title = paste0(biodiv_name), 
-         x = "Change in habitat extent (%)",
-         y = paste0("Change in ", biodiv_name), colour = NULL) +
-    theme_bw()
-}
-```
-
-```{r message=FALSE}
-plot_data_change %>%
-  group_by(metric) %>%
-  group_split() %>%
-  map(make_plot_change)
-```
-
-## Effect of change in extent for each habitat type
-
-```{r}
-models_change_hab <- biodiv_extent %>%
-  group_by(metric, eunis1) %>%
-  nest() %>%
-  mutate(
-    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
-    coef = map(model, ~ tidy(.x) %>%
-                 filter(term == "delta_focal_pct")),
-    fit = map(model, glance),
-    estimate = map_dbl(coef, "estimate"),
-    p.value  = map_dbl(coef, "p.value"),
-    r2       = map_dbl(fit, "r.squared"),
-    n        = map_int(data, nrow)
-  ) %>%
-  dplyr::select(metric, eunis1, model, estimate, p.value, r2, n)
-```
-
-### TBD? Check performance of models
-
-```{r}
-models_change_hab %>% filter(p.value < 0.05) %>% arrange(metric, eunis1)
-```
-
-```{r}
-plot_data_change_hab <- biodiv_extent %>%
-  semi_join(
-    models_change_hab %>%
-      dplyr::filter(p.value < 0.05),
-    by = c("metric", "eunis1")
-  ) %>%
-  left_join(
-    models_change_hab %>%
-      dplyr::select(metric, eunis1, estimate, p.value, r2, n) %>%
-      rename(n_obs = n),
-    by = c("metric", "eunis1")
-  )
-```
-
-```{r}
-make_plot_change_hab <- function(df){
-
-  biodiv_name <- unique(df$metric)
-  EUNIS <- unique(df$eunis1)
-  estimate <- unique(df$estimate)
-  pval <- unique(df$p.value)
-  r2 <- unique(df$r2)
-  n_obs <- unique(df$n_obs)
-
-  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
-    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
-    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
-             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
-                             estimate, r2, pval, n_obs)) +
-    labs(title = paste0(biodiv_name, " | EUNIS = ", EUNIS),
-         x = "Change in habitat extent (%)",
-         y = paste0("Change in ", biodiv_name)) +
-    theme_bw()
-}
-```
-
-```{r message=FALSE}
-plot_data_change_hab %>%
-  group_by(metric, eunis1) %>%
-  group_split() %>%
-  map(make_plot_change_hab)
-```
-
-## Effect of change in extent for each trajectory type
-
-```{r}
-models_change_traj <- biodiv_extent %>%
-  group_by(metric, Trajectory) %>%
-  nest() %>%
-  mutate(
-    model = map(data, ~ lm(slope ~ delta_focal_pct, data = .x)),
-    coef = map(model, ~ tidy(.x) %>%
-                 filter(term == "delta_focal_pct")),
-    fit = map(model, glance),
-    estimate = map_dbl(coef, "estimate"),
-    p.value  = map_dbl(coef, "p.value"),
-    r2       = map_dbl(fit, "r.squared"),
-    n        = map_int(data, nrow)
-  ) %>%
-  dplyr::select(metric, Trajectory, model, estimate, p.value, r2, n)
-```
-
-```{r}
-models_change_traj %>% filter(p.value < 0.05) %>% arrange(metric, Trajectory)
-```
-
-```{r}
-plot_data_change_traj <- biodiv_extent %>%
-  semi_join(
-    models_change_traj %>%
-      dplyr::filter(p.value < 0.05),
-    by = c("metric", "Trajectory")
-  ) %>%
-  left_join(
-    models_change_traj %>%
-      dplyr::select(metric, Trajectory, estimate, p.value, r2, n) %>%
-      rename(n_obs = n),
-    by = c("metric", "Trajectory")
-  )
-```
-
-```{r}
-make_plot_change_traj <- function(df){
-
-  biodiv_name <- unique(df$metric)
-  traj <- unique(df$Trajectory)
-  estimate <- unique(df$estimate)
-  pval <- unique(df$p.value)
-  r2 <- unique(df$r2)
-  n_obs <- unique(df$n_obs)
-
-  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
-    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
-    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
-             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
-                             estimate, r2, pval, n_obs)) +
-    labs(title = paste0(biodiv_name, " | Trajectory = ", traj),
-         x = "Change in habitat extent (%)", 
-         y = paste0("Change in ", biodiv_name)) +
-    theme_bw()
-}
-```
-
-```{r message=FALSE}
-plot_data_change_traj %>%
-  group_by(metric, Trajectory) %>%
-  group_split() %>%
-  map(make_plot_change_traj)
-```
-
-# Models change in FUNCTIONAL METRICS
-
-## Effect of change in functional metrics on change in diversity
-
-```{r}
-models_change_funct <- biodiv_extent %>%
-  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
-                        savi_resurvey),
-               names_to = "rs_index", values_to = "rs_slope") %>%
-  group_by(metric, rs_index) %>%
-  nest() %>%
-  mutate(
-    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
-    coef = map(model, ~ tidy(.x) %>%
-                 filter(term == "rs_slope")),
-    fit = map(model, glance),
-    estimate = map_dbl(coef, "estimate"),
-    p.value  = map_dbl(coef, "p.value"),
-    r2       = map_dbl(fit, "r.squared"),
-    n        = map_int(data, nrow)
-  ) %>%
-  dplyr::select(metric, rs_index, model, estimate, p.value, r2, n)
-```
-
-```{r}
-models_change_funct %>% filter(p.value < 0.05) %>% arrange(metric, rs_index)
-```
-
-```{r}
-plot_data_change_funct <- biodiv_extent %>%
-  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
-                        savi_resurvey),
-               names_to = "rs_index", values_to = "rs_slope") %>%
-  semi_join(models_change_funct %>% filter(p.value < 0.05),
-            by = c("metric", "rs_index")) %>%
-  left_join(models_change_funct %>%
-              dplyr::select(metric, rs_index, estimate, p.value, r2, n) %>%
-              rename(n_obs = n),
-            by = c("metric", "rs_index")
-            )
-```
-
-```{r}
-make_plot_change_funct <- function(df){
-  
-  biodiv_name <- unique(df$metric)
-  rs_index <- unique(df$rs_index)
-  estimate <- unique(df$estimate)
-  pval <- unique(df$p.value)
-  r2 <- unique(df$r2)
-  n_obs <- unique(df$n_obs)
-  
-  ggplot(df, aes(x = rs_slope, y = slope)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
-    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
-    annotate("text", x = Inf, y = Inf, hjust = 1.3, vjust = 1.1,size = 4,
-             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn = %d",
-                             estimate, r2, pval, n_obs)) +
-    labs(title = paste0(biodiv_name, " | ", rs_index),
-         x = paste0(rs_index, " Sen's slope"),
-         y = paste0("Change in ", biodiv_name)) +
-    theme_bw()
-  }
-```
-
-```{r message=FALSE, warning=FALSE}
-plot_data_change_funct %>%
-  group_by(metric, rs_index) %>%
-  group_split() %>%
-  map(make_plot_change_funct)
-```
-
-## Effect of change in functional metrics for each habitat type
-
-```{r}
-models_change_funct_hab <- biodiv_extent %>%
-  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
-                        savi_resurvey),
-               names_to = "rs_index", values_to = "rs_slope") %>%
-  group_by(metric, rs_index, eunis1) %>%
-  nest() %>%
-  mutate(
-    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
-    coef = map(model, ~ tidy(.x) %>%
-                 filter(term == "rs_slope")),
-    fit = map(model, glance),
-    estimate = map_dbl(coef, "estimate"),
-    p.value  = map_dbl(coef, "p.value"),
-    r2       = map_dbl(fit, "r.squared"),
-    n        = map_int(data, nrow)
-  ) %>%
-  dplyr::select(metric, rs_index, eunis1, model, estimate, p.value, r2, n)
-```
-
-```{r}
-models_change_funct_hab %>% filter(p.value < 0.05 & r2 > 0.1) %>% 
-  arrange(metric, rs_index, eunis1)
-```
-
-```{r}
-plot_data_change_funct_hab <- biodiv_extent %>%
-  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
-                        savi_resurvey),
-               names_to = "rs_index", values_to = "rs_slope") %>%
-  semi_join(
-    models_change_funct_hab %>% dplyr::filter(p.value < 0.05 & r2 > 0.1),
-    by = c("metric", "rs_index", "eunis1")
-  ) %>%
-  left_join(
-    models_change_funct_hab %>%
-      dplyr::select(metric, rs_index, eunis1, estimate, p.value, r2, n) %>%
-      rename(n_obs = n),
-    by = c("metric", "rs_index", "eunis1")
-  )
-```
-
-```{r}
-make_plot_change_funct_hab <- function(df){
-
-  biodiv_name <- unique(df$metric)
-  rs_index <- unique(df$rs_index)
-  EUNIS <- unique(df$eunis1)
-  estimate <- unique(df$estimate)
-  pval <- unique(df$p.value)
-  r2 <- unique(df$r2)
-  n_obs <- unique(df$n_obs)
-
-  ggplot(df, aes(x = rs_slope, y = slope)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
-    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
-    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
-             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
-                             estimate, r2, pval, n_obs)) +
-    labs(title = paste0(biodiv_name, " | EUNIS = ", EUNIS),
-         x = paste0(rs_index, " Sen's slope"),
-         y = paste0("Change in ", biodiv_name)) +
-    theme_bw()
-}
-```
-
-```{r message=FALSE}
-plot_data_change_funct_hab %>%
-  group_by(metric, rs_index, eunis1) %>%
-  group_split() %>%
-  map(make_plot_change_funct_hab)
-```
-
-## Effect of change in functional metrics for each trajectory type
-
-```{r}
-models_change_funct_traj <- biodiv_extent %>%
-  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
-                        savi_resurvey),
-               names_to = "rs_index", values_to = "rs_slope") %>%
-  group_by(metric, rs_index, Trajectory) %>%
-  nest() %>%
-  mutate(
-    model = map(data, ~ lm(slope ~ rs_slope, data = .x)),
-    coef = map(model, ~ tidy(.x) %>%
-                 filter(term == "rs_slope")),
-    fit = map(model, glance),
-    estimate = map_dbl(coef, "estimate"),
-    p.value  = map_dbl(coef, "p.value"),
-    r2       = map_dbl(fit, "r.squared"),
-    n        = map_int(data, nrow)
-  ) %>%
-  dplyr::select(metric, rs_index, Trajectory, model, estimate, p.value, r2, n)
-```
-
-```{r}
-models_change_funct_traj %>% filter(p.value < 0.05 & r2 > 0.2) %>% 
-  arrange(metric, rs_index, Trajectory)
-```
-
-```{r}
-plot_data_change_funct_traj <- biodiv_extent %>%
-  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
-                        savi_resurvey),
-               names_to = "rs_index", values_to = "rs_slope") %>%
-  semi_join(
-    models_change_funct_traj %>% dplyr::filter(p.value < 0.05 & r2 > 0.2),
-    by = c("metric", "rs_index", "Trajectory")
-  ) %>%
-  left_join(
-    models_change_funct_traj %>%
-      dplyr::select(metric, rs_index, Trajectory, estimate, p.value, r2, n) %>%
-      rename(n_obs = n),
-    by = c("metric", "rs_index", "Trajectory")
-  )
-```
-
-```{r}
-make_plot_change_funct_traj <- function(df){
-
-  biodiv_name <- unique(df$metric)
-  rs_index <- unique(df$rs_index)
-  Trajectory <- unique(df$Trajectory)
-  estimate <- unique(df$estimate)
-  pval <- unique(df$p.value)
-  r2 <- unique(df$r2)
-  n_obs <- unique(df$n_obs)
-
-  ggplot(df, aes(x = rs_slope, y = slope)) +
-    geom_point(alpha = 0.4) +
-    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
-    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
-    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
-             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
-                             estimate, r2, pval, n_obs)) +
-    labs(title = paste0(biodiv_name, " | Trajectory = ", Trajectory),
-         x = paste0(rs_index, " Sen's slope"),
-         y = paste0("Change in ", biodiv_name)) +
-    theme_bw()
-}
-```
-
-```{r message=FALSE}
-plot_data_change_funct_traj %>%
-  group_by(metric, rs_index, Trajectory) %>%
-  group_split() %>%
-  map(make_plot_change_funct_traj)
 ```
 
 # TBD: Try other model types instead of lm() for some variables
@@ -880,6 +389,29 @@ plot_data_change_noout <- biodiv_extent %>%
       rename(n_obs = n),
     by = c("metric")
   )
+```
+
+```{r}
+make_plot_change <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name), 
+         x = "Change in habitat extent (%)",
+         y = paste0("Change in ", biodiv_name), colour = NULL) +
+    theme_bw()
+}
 ```
 
 ```{r message=FALSE}
@@ -944,6 +476,30 @@ plot_data_change_hab_noout <- biodiv_extent %>%
   )
 ```
 
+```{r}
+make_plot_change_hab <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  EUNIS <- unique(df$eunis1)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | EUNIS = ", EUNIS),
+         x = "Change in habitat extent (%)",
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
 ```{r message=FALSE}
 plot_data_change_hab_noout %>%
   group_by(metric, eunis1) %>%
@@ -1004,6 +560,30 @@ plot_data_change_traj_noout <- biodiv_extent %>%
       rename(n_obs = n),
     by = c("metric", "Trajectory")
   )
+```
+
+```{r}
+make_plot_change_traj <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  traj <- unique(df$Trajectory)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = delta_focal_pct, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | Trajectory = ", traj),
+         x = "Change in habitat extent (%)", 
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
 ```
 
 ```{r message=FALSE}
@@ -1069,6 +649,30 @@ plot_data_change_funct_noout <- biodiv_extent %>%
               rename(n_obs = n),
             by = c("metric", "rs_index")
             )
+```
+
+```{r}
+make_plot_change_funct <- function(df){
+  
+  biodiv_name <- unique(df$metric)
+  rs_index <- unique(df$rs_index)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+  
+  ggplot(df, aes(x = rs_slope, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.3, vjust = 1.1,size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | ", rs_index),
+         x = paste0(rs_index, " Sen's slope"),
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+  }
 ```
 
 ```{r message=FALSE, warning=FALSE}
@@ -1138,6 +742,31 @@ plot_data_change_funct_hab_noout <- biodiv_extent %>%
   )
 ```
 
+```{r}
+make_plot_change_funct_hab <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  rs_index <- unique(df$rs_index)
+  EUNIS <- unique(df$eunis1)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = rs_slope, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | EUNIS = ", EUNIS),
+         x = paste0(rs_index, " Sen's slope"),
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
 ```{r message=FALSE}
 plot_data_change_funct_hab_noout %>%
   group_by(metric, rs_index, eunis1) %>%
@@ -1205,6 +834,31 @@ plot_data_change_funct_traj_noout <- biodiv_extent %>%
   )
 ```
 
+```{r}
+make_plot_change_funct_traj <- function(df){
+
+  biodiv_name <- unique(df$metric)
+  rs_index <- unique(df$rs_index)
+  Trajectory <- unique(df$Trajectory)
+  estimate <- unique(df$estimate)
+  pval <- unique(df$p.value)
+  r2 <- unique(df$r2)
+  n_obs <- unique(df$n_obs)
+
+  ggplot(df, aes(x = rs_slope, y = slope)) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", colour = "blue", fill = "blue", alpha = 0.15) +
+    geom_smooth(method = MASS::rlm, colour = "red", se = FALSE) +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.1, size = 4,
+             label = sprintf("β = %.3f\nR² = %.3f\np = %.3g\nn obs = %d",
+                             estimate, r2, pval, n_obs)) +
+    labs(title = paste0(biodiv_name, " | Trajectory = ", Trajectory),
+         x = paste0(rs_index, " Sen's slope"),
+         y = paste0("Change in ", biodiv_name)) +
+    theme_bw()
+}
+```
+
 ```{r message=FALSE}
 plot_data_change_funct_traj_noout %>%
   group_by(metric, rs_index, Trajectory) %>%
@@ -1212,7 +866,2561 @@ plot_data_change_funct_traj_noout %>%
   map(make_plot_change_funct_traj)
 ```
 
+# Models change in EXTENT quantreg
 
+First removing upper and lower 1% quantiles of biodiversity change values (slopes), then running the models using quantile regression.
+
+## Define quantiles to be used in quantreg
+
+```{r}
+taus <- c(0.1, 0.5, 0.9)
+```
+
+## Check proportion of zeros and quantiles
+
+```{r}
+diagnostic <- biodiv_extent %>%
+  group_by(metric) %>%
+  summarise(
+    n = n(),
+    prop_zero = mean(abs(slope) < 1e-10),
+    q10 = quantile(slope, 0.1, na.rm = TRUE),
+    q50 = quantile(slope, 0.5, na.rm = TRUE),
+    q90 = quantile(slope, 0.9, na.rm = TRUE),
+    sd = sd(slope, na.rm = TRUE)
+  ) %>%
+  arrange(desc(prop_zero))
+
+diagnostic
+```
+
+
+## Effect of change in extent on change in diversity
+
+### Function to get coefficients from quantile regression
+
+```{r}
+get_rq_coef <- function(mod) {
+
+  tryCatch({
+
+    s <- summary(mod)
+
+    coef_name <- rownames(s$coefficients)[2]
+
+    tibble(
+      term = coef_name,
+      estimate = s$coefficients[coef_name, 1],
+      p.value = s$coefficients[coef_name, 4],
+      method = "standard"
+    )
+
+  }, error = function(e) {
+
+    tryCatch({
+
+      s <- summary(
+        mod,
+        se = "boot",
+        R = 50
+      )
+
+      coef_name <- rownames(s$coefficients)[2]
+
+      tibble(
+        term = coef_name,
+        estimate = s$coefficients[coef_name, 1],
+        p.value = s$coefficients[coef_name, 4],
+        method = "bootstrap"
+      )
+
+    }, error = function(e2) {
+
+      coef_name <- names(coef(mod))[2]
+
+      tibble(
+        term = coef_name,
+        estimate = unname(coef(mod)[coef_name]),
+        p.value = NA_real_,
+        method = "failed_inference"
+      )
+
+    })
+
+  })
+
+}
+```
+
+### Models
+
+```{r}
+models_change_quantreg <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(model = map2(data, tau, ~ rq(slope ~ delta_focal_pct, tau = .y,
+                                      data = .x)),
+         coef = map(model, get_rq_coef),
+         estimate = map_dbl(coef, ~ .x$estimate[1]),
+         p.value = map_dbl(coef, ~ .x$p.value[1]),
+         sig = case_when(is.na(p.value) ~ "NA", 
+                    p.value < 0.05 ~ "p < 0.05",
+                    TRUE ~ "ns"),
+         n = map_int(data, nrow),
+         method = map_chr(coef, ~ .x$method[1])) %>%
+  dplyr::select(metric, tau, model, estimate, p.value, sig, n, method)
+```
+
+### Plots coefs quantiles
+
+```{r}
+ggplot(
+  models_change_quantreg,
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+### Function to plot quantile regression
+
+```{r}
+plot_quantile_metric <- function(metric_name,
+                                 taus = c(0.1, 0.5, 0.9)) {
+  
+  # Datos
+  dat <- biodiv_extent %>% group_by(metric) %>%
+    mutate(q01 = quantile(slope, 0.01, na.rm = TRUE),
+           q99 = quantile(slope, 0.99, na.rm = TRUE)) %>%
+    filter(slope >= q01, slope <= q99) %>% ungroup() %>%
+    filter(metric == metric_name)
+  
+  # Colas para colorear puntos
+  dat_plot <- dat %>%
+    mutate(q10 = quantile(slope, 0.10, na.rm = TRUE),
+           q90 = quantile(slope, 0.90, na.rm = TRUE),
+           tail = case_when(slope <= q10 ~ "Lower 10%",
+                            slope >= q90 ~ "Upper 10%",
+                            TRUE ~ "Middle 80%"))
+  
+  # Modelos QR
+  mods <- purrr::map(taus,
+                     \(t) quantreg::rq(slope ~ delta_focal_pct, tau = t, 
+                                       data = dat))
+  
+  # P-values ya calculados previamente
+  pvals <- models_change_quantreg %>% filter(metric == metric_name) %>%
+    arrange(tau) %>% pull(p.value)
+  
+  p_labels <- sapply(pvals,
+                     function(p) {if (is.na(p)) {"p = NA"} 
+                       else if (p < 0.001) {"p < 0.001"}
+                       else {sprintf("p = %.3f", p)}})
+  
+  # Predicciones
+  newdat <- tibble(delta_focal_pct = seq(min(dat$delta_focal_pct, na.rm = TRUE),
+                                         max(dat$delta_focal_pct, na.rm = TRUE),
+                                         length.out = 200))
+  
+  preds <- purrr::map2_dfr(mods, seq_along(mods),
+                           \(m, i) {p <- pvals[i]
+                           tibble(
+                             delta_focal_pct = newdat$delta_focal_pct,
+                             pred = predict(m, newdata = newdat),
+                             tau = paste0("τ = ", taus[i],
+                                          ifelse(is.na(p), " (NA)",
+                                                 ifelse(p < 0.05, " *", ""))),
+                             sig = case_when(is.na(p) ~ "NA",
+                                             p < 0.05 ~ "Significant",
+                                             TRUE ~ "NS"))})
+  
+  # Colores líneas QR
+  tau_cols <- c("#6A3D9A", "grey60", "#E6AB02")
+
+  names(tau_cols) <- unique(preds$tau)
+
+  # Figura
+  ggplot(dat_plot, aes(delta_focal_pct, slope)) +
+    geom_hline(yintercept = 0, linetype = 2, colour = "grey50") +
+    geom_point(aes(colour = tail), alpha = 0.2, show.legend = FALSE) +
+    geom_line(data = preds, aes(y = pred, colour = tau, linetype = sig),
+              linewidth = 1.2) +
+    geom_ysidehistogram(aes(fill = tail), bins = 40, alpha = 0.8, 
+                        colour = "grey50", show.legend = FALSE) +
+    scale_fill_manual(values = c("Lower 10%" = "#6A3D9A", 
+                                 "Middle 80%" = "grey80",
+                                 "Upper 10%" = "#E6AB02")) +
+    scale_colour_manual(values = c("Lower 10%" = "#6A3D9A",
+                                   "Middle 80%" = "grey80",
+                                   "Upper 10%" = "#E6AB02",
+                                   tau_cols),
+                        breaks = names(tau_cols)) +
+    scale_linetype_manual(values = c("Significant" = "solid", "NS" = "dashed",
+                                     "NA" = "dotted"), guide = "none") +
+    theme_bw() + theme(ggside.panel.scale = 0.3) +
+    labs(x = "Change in habitat extent (%)",
+         y = paste("Change in", gsub("\n", " ", metric_name)), colour = NULL,
+         fill = NULL)}
+```
+
+### Plots quantile regression
+
+```{r warning=FALSE}
+plot_quantile_metric("Community-weighted\nmean niche width")
+# plot_quantile_metric("Cover")
+plot_quantile_metric("Cover of\ngeneralists")
+plot_quantile_metric("Cover of\nnon-native species")
+plot_quantile_metric("Cover of\nRed List species")
+# plot_quantile_metric("Cover of\nspecialists")
+# plot_quantile_metric("CWM_LeafArea")
+# plot_quantile_metric("CWM_LeafCNratio")
+# plot_quantile_metric("CWM_PlantHeight")
+# plot_quantile_metric("CWM_RootingDepth")
+# plot_quantile_metric("CWM_SLA")
+plot_quantile_metric("Faith\nphylogenetic diversity")
+plot_quantile_metric("Functional\ndivergence")
+plot_quantile_metric("Functional\nevenness")
+plot_quantile_metric("Functional\nrichness")
+plot_quantile_metric("Mean nearest\ntaxon distance")
+plot_quantile_metric("Mean pairwise\nphylogenetic distance")
+plot_quantile_metric("No. of\ngeneralists")
+plot_quantile_metric("No. of\nnon-native species")
+# plot_quantile_metric("No. of\nspecialists")
+plot_quantile_metric("No.of\nRed List species")
+plot_quantile_metric("Shannon\ndiversity")
+plot_quantile_metric("Species\nrichness")
+```
+
+## Effect of change in extent for each habitat type
+
+### Variation in metrics for each habitat type
+
+```{r}
+biodiv_extent %>%
+  filter(eunis1 == "Q") %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+biodiv_extent %>%
+  filter(eunis1 == "R") %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+biodiv_extent %>%
+  filter(eunis1 == "S") %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+biodiv_extent %>%
+  filter(eunis1 == "T") %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+biodiv_extent %>%
+  filter(eunis1 == "Change") %>%
+  group_by(metric) %>%
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  filter(slope >= q01, slope <= q99) %>%
+  ggplot(aes(slope)) +
+  geom_histogram(bins = 30, color = "black", fill = "grey") +
+  facet_wrap(~metric, scales = "free", ncol = 6) +
+  theme_bw() + xlab("Regression slope (annual percentage change)")
+```
+
+### Function to get coefficients from quantile regression
+
+```{r}
+get_rq_coef_fast <- function(mod){
+
+  out <- tryCatch({
+
+    broom::tidy(mod) %>%
+      filter(term == "delta_focal_pct")
+
+  }, error = function(e){
+
+    tibble()
+
+  })
+
+  if(nrow(out) == 0){
+
+    return(
+      tibble(
+        estimate = unname(coef(mod)["delta_focal_pct"]),
+        p.value = NA_real_,
+        method = "fallback"
+      )
+    )
+
+  }
+
+  out %>%
+    transmute(
+      estimate = estimate,
+      p.value = p.value,
+      method = "standard"
+    )
+
+}
+```
+
+### Models
+
+#### Q
+
+```{r}
+models_change_hab_quantreg_Q <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "Q") %>%
+  filter(metric %in% c("Community-weighted\nmean niche width", 
+                       # "Cover", 
+                       "Cover of\ngeneralists",
+                       # "Cover of\nnon-native species", 
+                       # "Cover of\nRed List species", 
+                       # "Cover of\nspecialists",
+                       # "CWM_LeafArea", 
+                       # "CWM_LeafCNratio", 
+                       # "CWM_PlantHeight",
+                       # "CWM_RootingDepth", 
+                       # "CWM_SLA",
+                       "Faith\nphylogenetic diversity",
+                       "Functional\ndivergence",
+                       "Functional\nevenness",
+                       "Functional\nrichness", 
+                       "Mean nearest\ntaxon distance",
+                       "Mean pairwise\nphylogenetic distance", 
+                       #"No. of\ngeneralists", 
+                       #"No. of\nnon-native species",
+                       #"No. of\nspecialists", 
+                       # "No.of\nRed List species",
+                       "Shannon\ndiversity", 
+                       "Species\nrichness")) %>%
+  group_by(metric) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ delta_focal_pct, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    estimate = map_dbl(coef, ~ .x$estimate[1]),
+    p.value = map_dbl(coef, ~ .x$p.value[1]),
+    sig = case_when(is.na(p.value) ~ "NA", 
+                    p.value < 0.05 ~ "p < 0.05",
+                    TRUE ~ "ns"),
+    n = map_int(data, nrow),
+    method = map_chr(coef, ~ .x$method[1])) %>%
+  mutate(eunis1 = "Q") %>%
+  dplyr::select(eunis1, metric, tau, model, estimate, p.value, sig, n, method)
+```
+
+#### R
+
+```{r}
+models_change_hab_quantreg_R <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "R") %>%
+  filter(metric %in% c("Community-weighted\nmean niche width", 
+                       # "Cover", 
+                       "Cover of\ngeneralists",
+                       "Cover of\nnon-native species", 
+                       "Cover of\nRed List species", 
+                       # "Cover of\nspecialists",
+                       # "CWM_LeafArea", 
+                       # "CWM_LeafCNratio", 
+                       # "CWM_PlantHeight",
+                       # "CWM_RootingDepth", 
+                       # "CWM_SLA",
+                       "Faith\nphylogenetic diversity",
+                       "Functional\ndivergence",
+                       "Functional\nevenness",
+                       "Functional\nrichness", 
+                       "Mean nearest\ntaxon distance",
+                       "Mean pairwise\nphylogenetic distance", 
+                       "No. of\ngeneralists", 
+                       "No. of\nnon-native species",
+                       # "No. of\nspecialists", 
+                        "No.of\nRed List species",
+                       "Shannon\ndiversity", 
+                       "Species\nrichness")) %>%
+  group_by(metric) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ delta_focal_pct, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    estimate = map_dbl(coef, ~ .x$estimate[1]),
+    p.value = map_dbl(coef, ~ .x$p.value[1]),
+    sig = case_when(is.na(p.value) ~ "NA", 
+                    p.value < 0.05 ~ "p < 0.05",
+                    TRUE ~ "ns"),
+    n = map_int(data, nrow),
+    method = map_chr(coef, ~ .x$method[1])) %>%
+  mutate(eunis1 = "R") %>%
+  dplyr::select(eunis1, metric, tau, model, estimate, p.value, sig, n, method)
+```
+
+#### S
+
+```{r}
+models_change_hab_quantreg_S <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "S") %>%
+  filter(metric %in% c("Community-weighted\nmean niche width", 
+                       # "Cover", 
+                       # "Cover of\ngeneralists",
+                       # "Cover of\nnon-native species", 
+                       # "Cover of\nRed List species", 
+                       # "Cover of\nspecialists",
+                       # "CWM_LeafArea", 
+                       # "CWM_LeafCNratio", 
+                       # "CWM_PlantHeight",
+                       # "CWM_RootingDepth", 
+                       # "CWM_SLA",
+                       "Faith\nphylogenetic diversity",
+                       "Functional\ndivergence",
+                       "Functional\nevenness",
+                       "Functional\nrichness", 
+                       "Mean nearest\ntaxon distance",
+                       "Mean pairwise\nphylogenetic distance", 
+                       # "No. of\ngeneralists", 
+                       # "No. of\nnon-native species",
+                       # "No. of\nspecialists", 
+                       # "No.of\nRed List species",
+                       "Shannon\ndiversity", 
+                       "Species\nrichness")) %>%
+  group_by(metric) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ delta_focal_pct, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    estimate = map_dbl(coef, ~ .x$estimate[1]),
+    p.value = map_dbl(coef, ~ .x$p.value[1]),
+    sig = case_when(is.na(p.value) ~ "NA", 
+                    p.value < 0.05 ~ "p < 0.05",
+                    TRUE ~ "ns"),
+    n = map_int(data, nrow),
+    method = map_chr(coef, ~ .x$method[1])) %>%
+  mutate(eunis1 = "S") %>%
+  dplyr::select(eunis1, metric, tau, model, estimate, p.value, sig, n, method)
+```
+
+#### T
+
+```{r}
+models_change_hab_quantreg_T <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "T") %>%
+  filter(metric %in% c("Community-weighted\nmean niche width", 
+                       # "Cover", 
+                       "Cover of\ngeneralists",
+                       "Cover of\nnon-native species", 
+                       "Cover of\nRed List species", 
+                       # "Cover of\nspecialists",
+                       # "CWM_LeafArea", 
+                       # "CWM_LeafCNratio", 
+                       # "CWM_PlantHeight",
+                       # "CWM_RootingDepth", 
+                       # "CWM_SLA",
+                       "Faith\nphylogenetic diversity",
+                       "Functional\ndivergence",
+                       "Functional\nevenness",
+                       "Functional\nrichness", 
+                       "Mean nearest\ntaxon distance",
+                       "Mean pairwise\nphylogenetic distance", 
+                       # "No. of\ngeneralists", 
+                       #"No. of\nnon-native species",
+                       # "No. of\nspecialists", 
+                       # "No.of\nRed List species",
+                       "Shannon\ndiversity", 
+                       "Species\nrichness")) %>%
+  group_by(metric) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ delta_focal_pct, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    estimate = map_dbl(coef, ~ .x$estimate[1]),
+    p.value = map_dbl(coef, ~ .x$p.value[1]),
+    sig = case_when(is.na(p.value) ~ "NA", 
+                    p.value < 0.05 ~ "p < 0.05",
+                    TRUE ~ "ns"),
+    n = map_int(data, nrow),
+    method = map_chr(coef, ~ .x$method[1])) %>%
+  mutate(eunis1 = "T") %>%
+  dplyr::select(eunis1, metric, tau, model, estimate, p.value, sig, n, method)
+```
+
+#### Change
+
+```{r}
+models_change_hab_quantreg_Change <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "Change") %>%
+  filter(metric %in% c("Community-weighted\nmean niche width", 
+                       # "Cover", 
+                       "Cover of\ngeneralists",
+                       # "Cover of\nnon-native species", 
+                       "Cover of\nRed List species", 
+                       # "Cover of\nspecialists",
+                       # "CWM_LeafArea", 
+                       # "CWM_LeafCNratio", 
+                       # "CWM_PlantHeight",
+                       # "CWM_RootingDepth", 
+                       # "CWM_SLA",
+                       "Faith\nphylogenetic diversity",
+                       "Functional\ndivergence",
+                       "Functional\nevenness",
+                       "Functional\nrichness", 
+                       "Mean nearest\ntaxon distance",
+                       "Mean pairwise\nphylogenetic distance", 
+                       "No. of\ngeneralists", 
+                       # "No. of\nnon-native species",
+                       # "No. of\nspecialists", 
+                       "No.of\nRed List species",
+                       "Shannon\ndiversity", 
+                       "Species\nrichness")) %>%
+  group_by(metric) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ delta_focal_pct, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    estimate = map_dbl(coef, ~ .x$estimate[1]),
+    p.value = map_dbl(coef, ~ .x$p.value[1]),
+    sig = case_when(is.na(p.value) ~ "NA", 
+                    p.value < 0.05 ~ "p < 0.05",
+                    TRUE ~ "ns"),
+    n = map_int(data, nrow),
+    method = map_chr(coef, ~ .x$method[1])) %>%
+  mutate(eunis1 = "Change") %>%
+  dplyr::select(eunis1, metric, tau, model, estimate, p.value, sig, n, method)
+```
+
+### Plots coefs quantiles
+
+#### Q
+
+```{r}
+ggplot(
+  models_change_hab_quantreg_Q,
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### R
+
+```{r}
+ggplot(
+  models_change_hab_quantreg_R,
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### S
+
+```{r}
+ggplot(
+  models_change_hab_quantreg_S,
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### T
+
+```{r}
+ggplot(
+  models_change_hab_quantreg_T,
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### Change
+
+```{r}
+ggplot(
+  models_change_hab_quantreg_Change,
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+### Function to plot quantile regression
+
+```{r}
+plot_quantile_metric_hab <- function(metric_name,
+                                     model_table,
+                                     data = biodiv_extent,
+                                     taus = c(0.1, 0.5, 0.9)) {
+
+  eunis_group <- unique(model_table$eunis1)
+
+  if (length(eunis_group) != 1)
+    stop("model_table must contain a single EUNIS habitat.")
+
+  dat <- data %>%
+    filter(eunis1 == eunis_group) %>%
+    group_by(metric) %>%
+    mutate(q01 = quantile(slope, 0.01, na.rm = TRUE),
+           q99 = quantile(slope, 0.99, na.rm = TRUE)) %>%
+    filter(slope >= q01, slope <= q99) %>%
+    ungroup() %>%
+    filter(metric == metric_name)
+
+  if (nrow(dat) == 0)
+    stop("No observations found for this metric.")
+
+  dat_plot <- dat %>%
+    mutate(
+      q10 = quantile(slope, 0.10, na.rm = TRUE),
+      q90 = quantile(slope, 0.90, na.rm = TRUE),
+      tail = case_when(
+        slope <= q10 ~ "Lower 10%",
+        slope >= q90 ~ "Upper 10%",
+        TRUE ~ "Middle 80%"
+      )
+    )
+
+  mods <- map(
+    taus,
+    \(t) rq(slope ~ delta_focal_pct, tau = t, data = dat)
+  )
+
+  pvals <- model_table %>%
+    filter(metric == metric_name) %>%
+    arrange(tau) %>%
+    pull(p.value)
+
+  newdat <- tibble(
+    delta_focal_pct = seq(
+      min(dat$delta_focal_pct, na.rm = TRUE),
+      max(dat$delta_focal_pct, na.rm = TRUE),
+      length.out = 200
+    )
+  )
+
+  preds <- map2_dfr(
+    mods, seq_along(mods),
+    \(m, i) {
+      p <- pvals[i]
+
+      tibble(
+        delta_focal_pct = newdat$delta_focal_pct,
+        pred = predict(m, newdata = newdat),
+        tau = paste0(
+          "τ = ", taus[i],
+          ifelse(is.na(p), " (NA)",
+                 ifelse(p < 0.05, " *", ""))
+        ),
+        sig = case_when(
+          is.na(p) ~ "NA",
+          p < 0.05 ~ "Significant",
+          TRUE ~ "NS"
+        )
+      )
+    }
+  )
+
+  tau_cols <- c("#6A3D9A", "grey60", "#E6AB02")
+  if (length(unique(preds$tau)) != 3)
+    tau_cols <- rep(tau_cols, length.out = length(unique(preds$tau)))
+
+  names(tau_cols) <- unique(preds$tau)
+
+  n_hab <- model_table %>%
+    filter(metric == metric_name) %>%
+    pull(n) %>%
+    unique()
+
+  ggplot(dat_plot, aes(delta_focal_pct, slope)) +
+    geom_hline(yintercept = 0, linetype = 2, colour = "grey50") +
+    geom_point(aes(colour = tail), alpha = 0.2, show.legend = FALSE) +
+    geom_line(data = preds,
+              aes(y = pred, colour = tau, linetype = sig),
+              linewidth = 1.2) +
+    geom_ysidehistogram(aes(fill = tail),
+                        bins = 40,
+                        alpha = 0.8,
+                        colour = "grey50",
+                        show.legend = FALSE) +
+    scale_fill_manual(values = c(
+      "Lower 10%" = "#6A3D9A",
+      "Middle 80%" = "grey80",
+      "Upper 10%" = "#E6AB02"
+    )) +
+    scale_colour_manual(
+      values = c(
+        "Lower 10%" = "#6A3D9A",
+        "Middle 80%" = "grey80",
+        "Upper 10%" = "#E6AB02",
+        tau_cols
+      ),
+      breaks = names(tau_cols)
+    ) +
+    scale_linetype_manual(
+      values = c(
+        "Significant" = "solid",
+        "NS" = "dashed",
+        "NA" = "dotted"
+      ),
+      guide = "none"
+    ) +
+    theme_bw() +
+    theme(ggside.panel.scale = 0.3) +
+    labs(
+      title = gsub("\n", " ", metric_name),
+      subtitle = paste0("EUNIS ", eunis_group, " (n = ", n_hab, ")"),
+      x = "Change in habitat extent (%)",
+      y = paste("Change in", gsub("\n", " ", metric_name)),
+      colour = NULL,
+      fill = NULL
+    )
+}
+```
+
+### Plots quantile regression
+
+#### Q
+
+```{r}
+plot_quantile_metric_hab(metric_name = "Community-weighted\nmean niche width",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Cover of\ngeneralists",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Faith\nphylogenetic diversity",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Functional\ndivergence",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Functional\nevenness",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Functional\nrichness",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Mean nearest\ntaxon distance",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Mean pairwise\nphylogenetic distance",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Shannon\ndiversity",
+                         model_table = models_change_hab_quantreg_Q)
+
+plot_quantile_metric_hab(metric_name = "Species\nrichness",
+                         model_table = models_change_hab_quantreg_Q)
+```
+
+#### R
+
+```{r}
+plot_quantile_metric_hab(metric_name = "Community-weighted\nmean niche width",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Cover of\ngeneralists",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Cover of\nnon-native species",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Cover of\nRed List species",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Faith\nphylogenetic diversity",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Functional\ndivergence",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Functional\nevenness",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Functional\nrichness",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Mean nearest\ntaxon distance",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Mean pairwise\nphylogenetic distance",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "No. of\ngeneralists",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "No. of\nnon-native species",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "No.of\nRed List species",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Shannon\ndiversity",
+                         model_table = models_change_hab_quantreg_R)
+
+plot_quantile_metric_hab(metric_name = "Species\nrichness",
+                         model_table = models_change_hab_quantreg_R)
+```
+
+#### S
+
+```{r}
+plot_quantile_metric_hab(metric_name = "Community-weighted\nmean niche width",
+                         model_table = models_change_hab_quantreg_S)
+plot_quantile_metric_hab(metric_name = "Faith\nphylogenetic diversity",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Functional\ndivergence",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Functional\nevenness",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Functional\nrichness",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Mean nearest\ntaxon distance",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Mean pairwise\nphylogenetic distance",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Shannon\ndiversity",
+                         model_table = models_change_hab_quantreg_S)
+
+plot_quantile_metric_hab(metric_name = "Species\nrichness",
+                         model_table = models_change_hab_quantreg_S)
+```
+
+#### T
+
+```{r}
+plot_quantile_metric_hab(metric_name = "Community-weighted\nmean niche width",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Cover of\ngeneralists",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Cover of\nnon-native species",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Faith\nphylogenetic diversity",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Functional\ndivergence",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Functional\nevenness",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Functional\nrichness",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Mean nearest\ntaxon distance",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Mean pairwise\nphylogenetic distance",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Shannon\ndiversity",
+                         model_table = models_change_hab_quantreg_T)
+
+plot_quantile_metric_hab(metric_name = "Species\nrichness",
+                         model_table = models_change_hab_quantreg_T)
+```
+
+#### Change
+
+```{r}
+plot_quantile_metric_hab(metric_name = "Community-weighted\nmean niche width",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Cover of\ngeneralists",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Cover of\nRed List species",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Faith\nphylogenetic diversity",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Functional\ndivergence",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Functional\nevenness",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Functional\nrichness",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Mean nearest\ntaxon distance",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Mean pairwise\nphylogenetic distance",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "No. of\ngeneralists",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "No.of\nRed List species",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Shannon\ndiversity",
+                         model_table = models_change_hab_quantreg_Change)
+
+plot_quantile_metric_hab(metric_name = "Species\nrichness",
+                         model_table = models_change_hab_quantreg_Change)
+```
+
+# Models change in FUNCTIONAL METRICS quantreg
+
+## Effect of change in functional metrics on change in diversity
+
+### Models
+
+```{r}
+models_change_funct_quantreg <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  filter(!metric %in% c("No.of\nRed List species")) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ rs_slope, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    n = map_int(data, nrow)) %>%
+  unnest(coef) %>%
+  mutate(
+    sig = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.05 ~ "p < 0.05",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  dplyr::select(metric, rs_index, tau, model, estimate, p.value, sig, n, method)
+```
+
+### Plots coefs quantiles
+
+```{r}
+ggplot(
+  models_change_funct_quantreg %>% filter(rs_index == "ndvi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg %>% filter(rs_index == "ndmi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg %>% filter(rs_index == "savi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg %>% filter(rs_index == "ndwi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+### Function to plot quantile regression
+
+```{r}
+plot_quantile_metric_rs <- function(metric_name,
+                                    rs_index_name,
+                                    taus = c(0.1, 0.5, 0.9)) {
+
+  # Datos
+  dat <- biodiv_extent %>%
+    group_by(metric) %>%
+    mutate(
+      q01 = quantile(slope, 0.01, na.rm = TRUE),
+      q99 = quantile(slope, 0.99, na.rm = TRUE)
+    ) %>%
+    filter(
+      slope >= q01,
+      slope <= q99
+    ) %>%
+    ungroup() %>%
+    filter(metric == metric_name) %>%
+    mutate(rs_slope = .data[[rs_index_name]])
+
+  # Colas para colorear puntos
+  dat_plot <- dat %>%
+    mutate(
+      q10 = quantile(slope, 0.10, na.rm = TRUE),
+      q90 = quantile(slope, 0.90, na.rm = TRUE),
+      tail = case_when(
+        slope <= q10 ~ "Lower 10%",
+        slope >= q90 ~ "Upper 10%",
+        TRUE ~ "Middle 80%"
+      )
+    )
+
+  # Modelos QR
+  mods <- map(
+    taus,
+    \(t)
+      rq(
+        slope ~ rs_slope,
+        tau = t,
+        data = dat
+      )
+  )
+
+  # P-values calculados previamente
+  pvals <- models_change_funct_quantreg %>%
+    filter(
+      metric == metric_name,
+      rs_index == rs_index_name
+    ) %>%
+    arrange(tau) %>%
+    pull(p.value)
+
+  # Predicciones
+  newdat <- tibble(
+    rs_slope = seq(
+      min(dat$rs_slope, na.rm = TRUE),
+      max(dat$rs_slope, na.rm = TRUE),
+      length.out = 200
+    )
+  )
+
+  preds <- map2_dfr(
+    mods,
+    seq_along(mods),
+    \(m, i) {
+
+      p <- pvals[i]
+
+      tibble(
+        rs_slope = newdat$rs_slope,
+        pred = predict(m, newdata = newdat),
+        tau = paste0(
+          "τ = ",
+          taus[i],
+          ifelse(
+            is.na(p),
+            " (NA)",
+            ifelse(p < 0.05, " *", "")
+          )
+        ),
+        sig = case_when(
+          is.na(p) ~ "NA",
+          p < 0.05 ~ "Significant",
+          TRUE ~ "NS"
+        )
+      )
+    }
+  )
+
+  # Colores QR
+  tau_cols <- c(
+    "#6A3D9A",
+    "grey60",
+    "#E6AB02"
+  )
+
+  names(tau_cols) <- unique(preds$tau)
+
+  # n
+  n_metric <- models_change_funct_quantreg %>%
+    filter(
+      metric == metric_name,
+      rs_index == rs_index_name
+    ) %>%
+    pull(n) %>%
+    unique()
+
+  # Figura
+  ggplot(
+    dat_plot,
+    aes(rs_slope, slope)
+  ) +
+    geom_hline(
+      yintercept = 0,
+      linetype = 2,
+      colour = "grey50"
+    ) +
+    geom_point(
+      aes(colour = tail),
+      alpha = 0.2,
+      show.legend = FALSE
+    ) +
+    geom_line(
+      data = preds,
+      aes(
+        y = pred,
+        colour = tau,
+        linetype = sig
+      ),
+      linewidth = 1.2
+    ) +
+    geom_ysidehistogram(
+      aes(fill = tail),
+      bins = 40,
+      alpha = 0.8,
+      colour = "grey50",
+      show.legend = FALSE
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Lower 10%" = "#6A3D9A",
+        "Middle 80%" = "grey80",
+        "Upper 10%" = "#E6AB02"
+      )
+    ) +
+    scale_colour_manual(
+      values = c(
+        "Lower 10%" = "#6A3D9A",
+        "Middle 80%" = "grey80",
+        "Upper 10%" = "#E6AB02",
+        tau_cols
+      ),
+      breaks = names(tau_cols)
+    ) +
+    scale_linetype_manual(
+      values = c(
+        "Significant" = "solid",
+        "NS" = "dashed",
+        "NA" = "dotted"
+      ),
+      guide = "none"
+    ) +
+    theme_bw() +
+    theme(
+      ggside.panel.scale = 0.3
+    ) +
+    labs(
+      title = gsub("\n", " ", metric_name),
+      subtitle = paste0(
+        rs_index_name,
+        " (n = ",
+        n_metric,
+        ")"
+      ),
+      x = rs_index_name,
+      y = paste(
+        "Change in",
+        gsub("\n", " ", metric_name)
+      ),
+      colour = NULL,
+      fill = NULL
+    )
+}
+```
+
+### Plots quantile regression
+
+```{r}
+plot_list <- models_change_funct_quantreg %>%
+  filter(!metric %in% c("Cover of\nspecialists", "No. of\nspecialists",
+                        "No. of\nRed List species")) %>%
+  distinct(metric, rs_index) %>%
+  mutate(plot = purrr::map2(metric, rs_index,
+                            ~ plot_quantile_metric_rs(metric_name = .x,
+                                                      rs_index_name = .y)))
+
+metric_plots <- plot_list %>% group_by(metric) %>%
+  summarise(combined_plot = list(wrap_plots(plot, ncol = 2)),
+            .groups = "drop")
+
+purrr::walk(
+  metric_plots$combined_plot,
+  print
+)
+```
+
+## HERE: Effect of change in functional metrics for each habitat type
+
+### Models
+
+#### Q 
+
+```{r}
+models_change_funct_quantreg_Q <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "Q") %>%
+  filter(!metric %in% c("No.of\nRed List species", "No. of\nspecialists",
+                        "No. of\nnon-native species", "No. of\ngeneralists",
+                        "Cover of\nspecialists", "Functional\nrichness",
+                        "Functional\nevenness", "Functional\ndivergence", 
+                        "Cover of\nnon-native species", 
+                        "Cover of\nRed List species")) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ rs_slope, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    n = map_int(data, nrow)) %>%
+  unnest(coef) %>%
+  mutate(
+    sig = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.05 ~ "p < 0.05",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  mutate(eunis1 = "Q") %>%
+  dplyr::select(eunis1, metric, rs_index, tau, model, estimate, p.value, sig, n,
+                method)
+```
+
+#### R
+
+```{r}
+models_change_funct_quantreg_R <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "R") %>%
+  filter(!metric %in% c("No. of\nspecialists", "Cover of\nspecialists")) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ rs_slope, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    n = map_int(data, nrow)) %>%
+  unnest(coef) %>%
+  mutate(
+    sig = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.05 ~ "p < 0.05",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  mutate(eunis1 = "R") %>%
+  dplyr::select(eunis1, metric, rs_index, tau, model, estimate, p.value, sig, n,
+                method)
+```
+
+#### S
+
+```{r}
+models_change_funct_quantreg_S <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "S") %>%
+  filter(!metric %in% c("No.of\nRed List species", "No. of\nspecialists",
+                        "No.of\non-native species", "No. of\ngeneralists",
+                        "Cover of\nspecialists", "Functional\nrichness",
+                        "Functional\nevenness", "Functional\ndivergence", 
+                        "Cover of\nnon-native species",
+                        "Cover of\ngeneralists",
+                        "Cover of\nRed List species")) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ rs_slope, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    n = map_int(data, nrow)) %>%
+  unnest(coef) %>%
+  mutate(
+    sig = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.05 ~ "p < 0.05",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  mutate(eunis1 = "S") %>%
+  dplyr::select(eunis1, metric, rs_index, tau, model, estimate, p.value, sig, n,
+                method)
+```
+
+#### T
+
+```{r}
+models_change_funct_quantreg_T <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "T") %>%
+  filter(!metric %in% c("No.of\nRed List species", "No. of\nspecialists",
+                        "Cover. of\nspecialists", 
+                        "Cover of\nnon-native species",
+                        "Cover of\nRed List species")) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ rs_slope, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    n = map_int(data, nrow)) %>%
+  unnest(coef) %>%
+  mutate(
+    sig = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.05 ~ "p < 0.05",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  mutate(eunis1 = "T") %>%
+  dplyr::select(eunis1, metric, rs_index, tau, model, estimate, p.value, sig, n,
+                method)
+```
+
+#### Change
+
+```{r}
+models_change_funct_quantreg_Change <- biodiv_extent %>%
+  group_by(metric) %>%
+  # Define quantiles
+  mutate(
+    q01 = quantile(slope, 0.01, na.rm = TRUE),
+    q99 = quantile(slope, 0.99, na.rm = TRUE)
+  ) %>%
+  # Reemove outliers
+  filter(slope >= q01, slope <= q99) %>%
+  ungroup() %>%
+  filter(eunis1 == "Change") %>%
+  filter(!metric %in% c("No. of\nspecialists", "No. of\nnon-native species",
+                        "Functional\nrichness", "Functional\nevenness",
+                        "Functional\ndivergence", "Cover of\nspecialists",
+                        "Cover of\nnon-native species")) %>%
+  pivot_longer(cols = c(ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+                        savi_resurvey),
+               names_to = "rs_index", values_to = "rs_slope") %>%
+  group_by(metric, rs_index) %>%
+  nest() %>%
+  crossing(tau = taus) %>%
+  mutate(
+    model = map2(data, tau, ~ rq(slope ~ rs_slope, tau = .y, data = .x)),
+    coef = map(model, get_rq_coef),
+    n = map_int(data, nrow)) %>%
+  unnest(coef) %>%
+  mutate(
+    sig = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.05 ~ "p < 0.05",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  mutate(eunis1 = "Change") %>%
+  dplyr::select(eunis1, metric, rs_index, tau, model, estimate, p.value, sig, n,
+                method)
+```
+
+### Plots coefs quantiles
+
+#### Q
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Q %>% filter(rs_index == "ndvi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Q %>% filter(rs_index == "ndmi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Q %>% filter(rs_index == "savi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Q %>% filter(rs_index == "ndwi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### R
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_R %>% filter(rs_index == "ndvi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_R %>% filter(rs_index == "ndmi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_R %>% filter(rs_index == "savi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_R %>% filter(rs_index == "ndwi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### S
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_S %>% filter(rs_index == "ndvi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_S %>% filter(rs_index == "ndmi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_S %>% filter(rs_index == "savi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_S %>% filter(rs_index == "ndwi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### T
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_T %>% filter(rs_index == "ndvi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_T %>% filter(rs_index == "ndmi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_T %>% filter(rs_index == "savi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_T %>% filter(rs_index == "ndwi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+#### Change
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Change %>% filter(rs_index == "ndvi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Change %>% filter(rs_index == "ndmi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Change %>% filter(rs_index == "savi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(
+  models_change_funct_quantreg_Change %>% filter(rs_index == "ndwi_resurvey"),
+  aes(x = tau, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() +
+  geom_point(aes(shape = sig, fill = sig), size = 3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_shape_manual(
+    values = c(
+      "p < 0.05" = 21,
+      "ns" = 21,
+      "NA" = 4
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "p < 0.05" = "black",
+      "ns" = "white",
+      "NA" = "red"
+    )
+  ) +
+  theme_bw()
+```
+
+### Plots quantile regression
+
+#### Function
+
+```{r}
+plot_quantile_metric_rs <- function(metric_name,
+                                    rs_index_name,
+                                    model_table,
+                                    data = biodiv_extent,
+                                    taus = c(0.1, 0.5, 0.9)) {
+
+  # Infer habitat automatically
+  eunis_group <- unique(model_table$eunis1)
+
+  if(length(eunis_group) != 1)
+    stop("model_table must contain a single eunis1 value.")
+
+  # Data
+  dat <- data %>%
+    filter(eunis1 == eunis_group) %>%
+    group_by(metric) %>%
+    mutate(
+      q01 = quantile(slope, 0.01, na.rm = TRUE),
+      q99 = quantile(slope, 0.99, na.rm = TRUE)
+    ) %>%
+    filter(
+      slope >= q01,
+      slope <= q99
+    ) %>%
+    ungroup() %>%
+    filter(metric == metric_name) %>%
+    mutate(
+      rs_slope = .data[[rs_index_name]]
+    )
+
+  dat_plot <- dat %>%
+    mutate(
+      q10 = quantile(slope, 0.10, na.rm = TRUE),
+      q90 = quantile(slope, 0.90, na.rm = TRUE),
+      tail = case_when(
+        slope <= q10 ~ "Lower 10%",
+        slope >= q90 ~ "Upper 10%",
+        TRUE ~ "Middle 80%"
+      )
+    )
+
+  mods <- purrr::map(
+    taus,
+    \(t)
+      quantreg::rq(
+        slope ~ rs_slope,
+        tau = t,
+        data = dat
+      )
+  )
+
+  pvals <- model_table %>%
+    filter(
+      metric == metric_name,
+      rs_index == rs_index_name
+    ) %>%
+    arrange(tau) %>%
+    pull(p.value)
+
+  newdat <- tibble(
+    rs_slope = seq(
+      min(dat$rs_slope, na.rm = TRUE),
+      max(dat$rs_slope, na.rm = TRUE),
+      length.out = 200
+    )
+  )
+
+  preds <- purrr::map2_dfr(
+    mods,
+    seq_along(mods),
+    \(m, i) {
+
+      p <- pvals[i]
+
+      tibble(
+        rs_slope = newdat$rs_slope,
+        pred = predict(m, newdata = newdat),
+        tau = paste0(
+          "τ = ",
+          taus[i],
+          ifelse(
+            is.na(p),
+            " (NA)",
+            ifelse(
+              p < 0.05,
+              " *",
+              ""
+            )
+          )
+        ),
+        sig = case_when(
+          is.na(p) ~ "NA",
+          p < 0.05 ~ "Significant",
+          TRUE ~ "NS"
+        )
+      )
+
+    }
+  )
+
+  tau_cols <- c(
+    "#6A3D9A",
+    "grey60",
+    "#E6AB02"
+  )
+
+  names(tau_cols) <- unique(preds$tau)
+
+  n_metric <- model_table %>%
+    filter(
+      metric == metric_name,
+      rs_index == rs_index_name
+    ) %>%
+    pull(n) %>%
+    unique()
+
+  ggplot(
+    dat_plot,
+    aes(rs_slope, slope)
+  ) +
+    geom_hline(
+      yintercept = 0,
+      linetype = 2,
+      colour = "grey50"
+    ) +
+    geom_point(
+      aes(colour = tail),
+      alpha = 0.2,
+      show.legend = FALSE
+    ) +
+    geom_line(
+      data = preds,
+      aes(
+        y = pred,
+        colour = tau,
+        linetype = sig
+      ),
+      linewidth = 1.2
+    ) +
+    geom_ysidehistogram(
+      aes(fill = tail),
+      bins = 40,
+      alpha = 0.8,
+      colour = "grey50",
+      show.legend = FALSE
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Lower 10%" = "#6A3D9A",
+        "Middle 80%" = "grey80",
+        "Upper 10%" = "#E6AB02"
+      )
+    ) +
+    scale_colour_manual(
+      values = c(
+        "Lower 10%" = "#6A3D9A",
+        "Middle 80%" = "grey80",
+        "Upper 10%" = "#E6AB02",
+        tau_cols
+      ),
+      breaks = names(tau_cols)
+    ) +
+    scale_linetype_manual(
+      values = c(
+        "Significant" = "solid",
+        "NS" = "dashed",
+        "NA" = "dotted"
+      ),
+      guide = "none"
+    ) +
+    theme_bw() +
+    theme(
+      ggside.panel.scale = 0.3
+    ) +
+    labs(
+      title = gsub("\n", " ", metric_name),
+      subtitle = paste0(
+        eunis_group,
+        " | ",
+        rs_index_name,
+        " (n = ",
+        n_metric,
+        ")"
+      ),
+      x = rs_index_name,
+      y = paste(
+        "Change in",
+        gsub("\n", " ", metric_name)
+      ),
+      colour = NULL,
+      fill = NULL
+    )
+}
+```
+
+#### Q
+
+```{r warning=FALSE}
+plot_list_Q <- models_change_funct_quantreg_Q %>%
+  distinct(metric, rs_index) %>%
+  mutate(
+    plot = purrr::map2(
+      metric,
+      rs_index,
+      ~ plot_quantile_metric_rs(
+          metric_name = .x,
+          rs_index_name = .y,
+          model_table = models_change_funct_quantreg_Q
+        )
+    )
+  )
+
+metric_plots_Q <- plot_list_Q %>%
+  group_by(metric) %>%
+  summarise(
+    combined_plot = list(
+      wrap_plots(plot, ncol = 2)
+    ),
+    .groups = "drop"
+  )
+
+purrr::walk(
+  metric_plots_Q$combined_plot,
+  print
+)
+```
+
+#### R
+
+```{r warning=FALSE}
+plot_list_R <- models_change_funct_quantreg_R %>%
+  distinct(metric, rs_index) %>%
+  mutate(
+    plot = purrr::map2(
+      metric,
+      rs_index,
+      ~ plot_quantile_metric_rs(
+          metric_name = .x,
+          rs_index_name = .y,
+          model_table = models_change_funct_quantreg_R
+        )
+    )
+  )
+
+metric_plots_R <- plot_list_R %>%
+  group_by(metric) %>%
+  summarise(
+    combined_plot = list(
+      wrap_plots(plot, ncol = 2)
+    ),
+    .groups = "drop"
+  )
+
+purrr::walk(
+  metric_plots_R$combined_plot,
+  print
+)
+```
+
+#### S
+
+```{r warning=FALSE}
+plot_list_S <- models_change_funct_quantreg_S %>%
+  distinct(metric, rs_index) %>%
+  mutate(
+    plot = purrr::map2(
+      metric,
+      rs_index,
+      ~ plot_quantile_metric_rs(
+          metric_name = .x,
+          rs_index_name = .y,
+          model_table = models_change_funct_quantreg_S
+        )
+    )
+  )
+
+metric_plots_S <- plot_list_S %>%
+  group_by(metric) %>%
+  summarise(
+    combined_plot = list(
+      wrap_plots(plot, ncol = 2)
+    ),
+    .groups = "drop"
+  )
+
+purrr::walk(
+  metric_plots_S$combined_plot,
+  print
+)
+```
+
+#### T
+
+```{r warning=FALSE}
+plot_list_T <- models_change_funct_quantreg_T %>%
+  distinct(metric, rs_index) %>%
+  mutate(
+    plot = purrr::map2(
+      metric,
+      rs_index,
+      ~ plot_quantile_metric_rs(
+          metric_name = .x,
+          rs_index_name = .y,
+          model_table = models_change_funct_quantreg_T
+        )
+    )
+  )
+
+metric_plots_T <- plot_list_T %>%
+  group_by(metric) %>%
+  summarise(
+    combined_plot = list(
+      wrap_plots(plot, ncol = 2)
+    ),
+    .groups = "drop"
+  )
+
+purrr::walk(
+  metric_plots_T$combined_plot,
+  print
+)
+```
+
+#### Change
+
+```{r warning=FALSE}
+plot_list_Change <- models_change_funct_quantreg_Change %>%
+  distinct(metric, rs_index) %>%
+  mutate(
+    plot = purrr::map2(
+      metric,
+      rs_index,
+      ~ plot_quantile_metric_rs(
+          metric_name = .x,
+          rs_index_name = .y,
+          model_table = models_change_funct_quantreg_Change
+        )
+    )
+  )
+
+metric_plots_Change <- plot_list_Change %>%
+  group_by(metric) %>%
+  summarise(
+    combined_plot = list(
+      wrap_plots(plot, ncol = 2)
+    ),
+    .groups = "drop"
+  )
+
+purrr::walk(
+  metric_plots_Change$combined_plot,
+  print
+)
+```
+
+
+
+# OLD
 
 # RDA slopes CWMs ~ slopes functional metrics
 
@@ -1221,7 +3429,7 @@ plot_data_change_funct_traj_noout %>%
 ```{r}
 cwm_wide <- biodiv_extent %>%
   filter(str_starts(metric, "CWM_")) %>%
-  dplyr::select(plotID, ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
+  dplyr::select(plot_id, ndvi_resurvey, ndmi_resurvey, ndwi_resurvey, 
                 savi_resurvey, metric, slope) %>% 
   distinct() %>%
   pivot_wider(names_from = metric, values_from = slope) %>%
@@ -1279,7 +3487,7 @@ library(vegan)
 rda_habitat <- biodiv_extent %>%
   filter(str_starts(metric, "CWM_")) %>%
   dplyr::select(
-    plotID, eunis1,
+    plot_id, eunis1,
     ndvi_resurvey, ndmi_resurvey,
     ndwi_resurvey, savi_resurvey,
     metric, slope
